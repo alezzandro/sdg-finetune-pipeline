@@ -20,7 +20,7 @@ This pipeline is designed for **RHEL AI 1.5** on an **AWS g6.xlarge** instance
 | OS | RHEL AI 1.5 (or any Linux with CUDA) |
 | GPU | NVIDIA L4 24 GB (or equivalent) |
 | Python | 3.12 |
-| System | `pandoc` (for AsciiDoc conversion) |
+| System | `pandoc` auto-downloaded by the script if missing or too old |
 | Remote LLM | Any OpenAI-compatible endpoint (for step 1 only) |
 
 ## Quick Start
@@ -35,11 +35,8 @@ pip install sdg-hub
 pip install training-hub[lora]
 pip install pypandoc docling
 
-# Make sure pandoc is installed on the system
-# Fedora/RHEL: sudo dnf install pandoc
-# Ubuntu/Debian: sudo apt install pandoc
-
 # Step 0 — convert AsciiDoc docs to a single Markdown file
+# (pandoc is auto-downloaded on first run if missing or too old)
 python 00_convert_docs.py docs/ -o corpus.md
 
 # Step 1 — generate dataset (uses a remote LLM, no GPU needed)
@@ -79,29 +76,10 @@ container, using podman to pass through the NVIDIA GPU.
 > On non-RHEL-AI hosts, install the NVIDIA Container Toolkit following the
 > [official guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
 
-### One-Time CDI Setup
-
-The [Container Device Interface (CDI)](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html)
-lets podman expose NVIDIA GPUs to containers without privileged mode. Generate
-the CDI spec once on the host:
-
-```bash
-sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
-nvidia-ctk cdi list   # should show nvidia.com/gpu=0 (or more)
-```
-
-Verify the GPU is visible:
-
-```bash
-podman run --rm --device nvidia.com/gpu=all \
-  registry.access.redhat.com/ubi9/ubi-minimal \
-  nvidia-smi
-```
-
 ### Option A: Interactive Container
 
-Launch an interactive UBI9 Python 3.12 container with GPU access and the
-project directory mounted as a volume:
+Launch an interactive UBI9 container with GPU access and the project directory
+mounted as a volume:
 
 ```bash
 podman run -it --rm \
@@ -109,23 +87,24 @@ podman run -it --rm \
   --security-opt=label=disable \
   -v ./:/workspace:Z \
   -w /workspace \
-  registry.access.redhat.com/ubi9/python-312 \
+  registry.access.redhat.com/ubi9/ubi \
   /bin/bash
 ```
 
-Inside the container, install the dependencies and run the pipeline:
+Inside the container, install Python 3.12 and system dependencies, then create
+a virtual environment:
 
 ```bash
-pip install --upgrade pip
-pip install sdg-hub
-pip install training-hub[lora]
-pip install pypandoc docling
-
-# pandoc is needed for AsciiDoc conversion (step 0)
-dnf install -y pandoc
+dnf install -y git python3.12 python3.12-pip python3.12-devel
+git clone https://github.com/alezzandro/sdg-finetune-pipeline.git && cd sdg-finetune-pipeline
+python3.12 -m venv venv && source venv/bin/activate
+pip3.12 install --upgrade pip
+pip3.12 install sdg-hub
+pip3.12 install training-hub[lora]
+pip3.12 install pypandoc docling
 
 # Now run the pipeline steps as shown in Quick Start
-python 00_convert_docs.py docs/ -o corpus.md
+python3.12 00_convert_docs.py docs/ -o corpus.md
 # ...
 ```
 
@@ -135,19 +114,19 @@ For a reproducible, pre-built image, create a `Containerfile` in the project
 root:
 
 ```dockerfile
-FROM registry.access.redhat.com/ubi9/python-312
+FROM registry.access.redhat.com/ubi9/ubi
 
-USER 0
+RUN dnf install -y git python3.12 python3.12-pip python3.12-devel && \
+    dnf clean all
 
-RUN dnf install -y pandoc && dnf clean all
+WORKDIR /workspace
+RUN python3.12 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+RUN pip3.12 install --no-cache-dir --upgrade pip && \
+    pip3.12 install --no-cache-dir sdg-hub training-hub[lora] pypandoc docling
 
 COPY . /workspace
-WORKDIR /workspace
-
-RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir sdg-hub training-hub[lora] pypandoc docling
-
-USER 1001
 ```
 
 Build and run:
@@ -160,7 +139,7 @@ podman run --rm \
   -v ./docs:/workspace/docs:Z \
   -v ./output:/workspace/output:Z \
   sdg-finetune-pipeline \
-  python 00_convert_docs.py docs/ -o output/corpus.md
+  python3.12 00_convert_docs.py docs/ -o output/corpus.md
 
 # Step 2 (GPU required)
 podman run --rm \
@@ -168,7 +147,7 @@ podman run --rm \
   --security-opt=label=disable \
   -v ./output:/workspace/output:Z \
   sdg-finetune-pipeline \
-  python 02_train_model.py \
+  python3.12 02_train_model.py \
     --dataset output/dataset.csv \
     --model ibm-granite/granite-4.0-1b \
     --output output/checkpoints
@@ -193,13 +172,13 @@ Step 2 downloads model weights from Hugging Face. To avoid re-downloading on
 every container run, mount a cache directory:
 
 ```bash
-podman run --rm \
+podman run -it --rm \
   --device nvidia.com/gpu=all \
   --security-opt=label=disable \
   -v ./:/workspace:Z \
-  -v hf-cache:/home/default/.cache/huggingface \
+  -v hf-cache:/root/.cache/huggingface \
   -w /workspace \
-  registry.access.redhat.com/ubi9/python-312 \
+  registry.access.redhat.com/ubi9/ubi \
   /bin/bash
 ```
 
@@ -209,8 +188,9 @@ container restarts.
 ## Step 0: Convert Documentation to Markdown
 
 `00_convert_docs.py` converts `.adoc` (AsciiDoc) and `.pdf` files to Markdown.
-AsciiDoc files are converted using **pypandoc** (requires `pandoc` on the
-system) and PDF files are converted using **docling**.
+AsciiDoc files are converted using **pypandoc** and PDF files are converted
+using **docling**. A compatible version of `pandoc` (>= 2.15) is automatically
+downloaded on first run if the system version is missing or too old.
 
 By default all input files are merged into a single Markdown file, which is
 what step 1 expects.

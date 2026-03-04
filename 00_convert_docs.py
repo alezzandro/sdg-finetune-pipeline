@@ -35,9 +35,33 @@ def find_files(input_paths):
     return files
 
 
+_pandoc_checked = False
+
+
+def _ensure_pandoc():
+    """Ensure a pandoc version that supports the asciidoc reader (>= 2.15)."""
+    global _pandoc_checked
+    if _pandoc_checked:
+        return
+    import pypandoc
+    try:
+        version = pypandoc.get_pandoc_version()
+        major, minor = (int(x) for x in version.split(".")[:2])
+        if major > 2 or (major == 2 and minor >= 15):
+            _pandoc_checked = True
+            return
+        print(f"System pandoc {version} is too old (need >= 2.15 for AsciiDoc).")
+    except OSError:
+        print("No system pandoc found.")
+    print("Downloading a compatible pandoc via pypandoc...")
+    pypandoc.download_pandoc()
+    _pandoc_checked = True
+
+
 def convert_adoc(path):
     """Convert an AsciiDoc file to Markdown via pandoc."""
     import pypandoc
+    _ensure_pandoc()
     return pypandoc.convert_file(path, "md", format="asciidoc")
 
 
