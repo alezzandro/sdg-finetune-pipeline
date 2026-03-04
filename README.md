@@ -62,6 +62,150 @@ python 02_train_model.py \
   --max-seq-len 512
 ```
 
+## Running in a Container (Podman + UBI9)
+
+RHEL AI ships with Python 3.9 on the host, which is too old for this pipeline.
+The recommended approach is to run everything inside a **UBI9 Python 3.12**
+container, using podman to pass through the NVIDIA GPU.
+
+### Host Prerequisites
+
+| Requirement | Notes |
+|-------------|-------|
+| `podman` | Pre-installed on RHEL AI |
+| NVIDIA GPU drivers | Pre-installed on RHEL AI |
+| `nvidia-container-toolkit` | Pre-installed on RHEL AI; provides CDI support for rootless GPU containers |
+
+> On non-RHEL-AI hosts, install the NVIDIA Container Toolkit following the
+> [official guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+### One-Time CDI Setup
+
+The [Container Device Interface (CDI)](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/cdi-support.html)
+lets podman expose NVIDIA GPUs to containers without privileged mode. Generate
+the CDI spec once on the host:
+
+```bash
+sudo nvidia-ctk cdi generate --output=/etc/cdi/nvidia.yaml
+nvidia-ctk cdi list   # should show nvidia.com/gpu=0 (or more)
+```
+
+Verify the GPU is visible:
+
+```bash
+podman run --rm --device nvidia.com/gpu=all \
+  registry.access.redhat.com/ubi9/ubi-minimal \
+  nvidia-smi
+```
+
+### Option A: Interactive Container
+
+Launch an interactive UBI9 Python 3.12 container with GPU access and the
+project directory mounted as a volume:
+
+```bash
+podman run -it --rm \
+  --device nvidia.com/gpu=all \
+  --security-opt=label=disable \
+  -v ./:/workspace:Z \
+  -w /workspace \
+  registry.access.redhat.com/ubi9/python-312 \
+  /bin/bash
+```
+
+Inside the container, install the dependencies and run the pipeline:
+
+```bash
+pip install --upgrade pip
+pip install sdg-hub
+pip install training-hub[lora]
+pip install pypandoc docling
+
+# pandoc is needed for AsciiDoc conversion (step 0)
+dnf install -y pandoc
+
+# Now run the pipeline steps as shown in Quick Start
+python 00_convert_docs.py docs/ -o corpus.md
+# ...
+```
+
+### Option B: Build a Custom Image (Containerfile)
+
+For a reproducible, pre-built image, create a `Containerfile` in the project
+root:
+
+```dockerfile
+FROM registry.access.redhat.com/ubi9/python-312
+
+USER 0
+
+RUN dnf install -y pandoc && dnf clean all
+
+COPY . /workspace
+WORKDIR /workspace
+
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir sdg-hub training-hub[lora] pypandoc docling
+
+USER 1001
+```
+
+Build and run:
+
+```bash
+podman build -t sdg-finetune-pipeline .
+
+# Steps 0–1 (no GPU needed)
+podman run --rm \
+  -v ./docs:/workspace/docs:Z \
+  -v ./output:/workspace/output:Z \
+  sdg-finetune-pipeline \
+  python 00_convert_docs.py docs/ -o output/corpus.md
+
+# Step 2 (GPU required)
+podman run --rm \
+  --device nvidia.com/gpu=all \
+  --security-opt=label=disable \
+  -v ./output:/workspace/output:Z \
+  sdg-finetune-pipeline \
+  python 02_train_model.py \
+    --dataset output/dataset.csv \
+    --model ibm-granite/granite-4.0-1b \
+    --output output/checkpoints
+```
+
+### GPU Passthrough Reference
+
+| Method | Flag | When to Use |
+|--------|------|-------------|
+| **CDI** (recommended) | `--device nvidia.com/gpu=all` | RHEL AI / systems with `nvidia-container-toolkit` and CDI configured |
+| **CDI (specific GPU)** | `--device nvidia.com/gpu=0` | Multi-GPU hosts when you want to target a single GPU |
+| **OCI hooks** (legacy) | `--hooks-dir=/usr/share/containers/oci/hooks.d/` | Older `nvidia-container-toolkit` versions without CDI |
+| **Direct devices** | `--device /dev/nvidia0 --device /dev/nvidiactl --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools` | Fallback when no container toolkit is installed (limited CUDA support) |
+
+> **Tip:** On RHEL AI, `--security-opt=label=disable` prevents SELinux from
+> blocking access to the GPU device nodes. It can be omitted if you configure
+> an appropriate SELinux policy instead.
+
+### Persisting Hugging Face Cache
+
+Step 2 downloads model weights from Hugging Face. To avoid re-downloading on
+every container run, mount a cache directory:
+
+```bash
+podman run --rm \
+  --device nvidia.com/gpu=all \
+  --security-opt=label=disable \
+  -v ./:/workspace:Z \
+  -v hf-cache:/home/default/.cache/huggingface \
+  -w /workspace \
+  registry.access.redhat.com/ubi9/python-312 \
+  /bin/bash
+```
+
+This creates a named podman volume (`hf-cache`) that persists across
+container restarts.
+
 ## Step 0: Convert Documentation to Markdown
 
 `00_convert_docs.py` converts `.adoc` (AsciiDoc) and `.pdf` files to Markdown.
