@@ -6,6 +6,7 @@ files written to an output directory.
 """
 
 import os
+import re
 import sys
 import argparse
 import glob
@@ -94,11 +95,30 @@ def _ensure_pandoc():
     _pandoc_checked = True
 
 
+def _preprocess_adoc(text):
+    """Clean AsciiDoc content so pandoc's asciidoc reader can handle it.
+
+    Strips include:: directives (referenced files are typically unavailable
+    when docs are copied without the full directory tree) and AsciiDoctor-
+    specific block attributes that pandoc does not support.
+    """
+    text = re.sub(r'^include::.*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^\[id="[^"]*".*\]\s*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^ifdef::.*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^ifndef::.*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^endif::.*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^:_content-type:.*$', '', text, flags=re.MULTILINE)
+    return text
+
+
 def convert_adoc(path):
     """Convert an AsciiDoc file to Markdown via pandoc."""
     import pypandoc
     _ensure_pandoc()
-    return pypandoc.convert_file(path, "md", format="asciidoc")
+    with open(path, "r", encoding="utf-8") as f:
+        raw = f.read()
+    cleaned = _preprocess_adoc(raw)
+    return pypandoc.convert_text(cleaned, "md", format="asciidoc")
 
 
 def convert_pdf(path):
