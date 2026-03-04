@@ -54,7 +54,7 @@ python 01_generate_dataset.py \
 # Step 2 — fine-tune a small model on the GPU
 python 02_train_model.py \
   --dataset dataset.csv \
-  --model "ibm-granite/granite-4.0-1b" \
+  --model "ibm-granite/granite-3.3-2b-instruct" \
   --output ./checkpoints \
   --system-prompt "You are an expert in OpenShift Virtualization networking." \
   --epochs 3 \
@@ -151,7 +151,7 @@ podman run --rm \
   sdg-finetune-pipeline \
   python3.12 02_train_model.py \
     --dataset output/dataset.csv \
-    --model ibm-granite/granite-4.0-1b \
+    --model ibm-granite/granite-3.3-2b-instruct \
     --output output/checkpoints
 ```
 
@@ -276,29 +276,35 @@ you fine-tune models up to ~7 B parameters comfortably.
 
 ### Recommended Models for the L4 24 GB
 
+> **Tip:** Always prefer an **instruct** model over a base model. Instruct
+> models already know how to follow instructions, so fine-tuning only needs
+> to add domain knowledge — producing much better answers.
+
 | Model | Params | Notes |
 |-------|--------|-------|
-| `ibm-granite/granite-4.0-1b` | 2 B | Fast training, good baseline |
-| `ibm-granite/granite-4.0-350m` | 0.4 B | Ultra-lightweight |
-| `ibm-granite/granite-3.3-2b-instruct` | 2 B | Previous-gen Granite |
-| `Qwen/Qwen2.5-1.5B-Instruct` | 1.5 B | Strong multilingual model |
+| `ibm-granite/granite-3.3-2b-instruct` | 2 B | Recommended — instruction-tuned, strong domain adaptation |
+| `Qwen/Qwen2.5-1.5B-Instruct` | 1.5 B | Strong multilingual instruct model |
+| `ibm-granite/granite-4.0-1b` | 2 B | Base model only — fast training but requires more data |
+| `ibm-granite/granite-4.0-350m` | 0.4 B | Ultra-lightweight base model |
 
 With QLoRA 4-bit, larger models (7 B+) also fit in 24 GB.
 
 ## Step 3: Test the Fine-Tuned Model
 
-`03_test_model.py` loads both the original base model and the LoRA-adapted
-model, sends the same question to each, and prints the answers side by side so
-you can see the effect of fine-tuning.
+`03_test_model.py` loads a reference model and the LoRA-adapted model, sends
+the same question to each, and prints the answers side by side so you can see
+the effect of fine-tuning.
 
-The base model identifier is read automatically from the checkpoint's
-`adapter_config.json`.
+By default the reference model is auto-detected from the checkpoint's
+`adapter_config.json`. Use `--base-model` to override it — for example, to
+compare against the original instruct model before fine-tuning.
 
 ### Arguments
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `--checkpoint` | No | `./checkpoints` | Path to the LoRA checkpoint directory |
+| `--base-model` | No | auto-detected from adapter config | HuggingFace model ID for the reference model |
 | `--question` | Yes | | Question to ask both models |
 | `--system-prompt` | No | | System prompt prepended to the conversation |
 | `--max-new-tokens` | No | `256` | Max tokens to generate |
@@ -307,18 +313,21 @@ The base model identifier is read automatically from the checkpoint's
 ### Examples
 
 ```bash
-# Basic comparison
+# Compare the instruct model (before) vs fine-tuned model (after)
 python 03_test_model.py \
   --checkpoint ./checkpoints \
-  --question "How do I expose a VM with a Kubernetes service?"
+  --base-model "ibm-granite/granite-3.3-2b-instruct" \
+  --question "How do I expose a VM with a Kubernetes service?" \
+  --system-prompt "You are an expert in OpenShift Virtualization networking."
 
-# With a system prompt
+# With a different question
 python 03_test_model.py \
   --checkpoint ./checkpoints \
+  --base-model "ibm-granite/granite-3.3-2b-instruct" \
   --question "What is the difference between masquerade and bridge networking?" \
   --system-prompt "You are an expert in OpenShift Virtualization networking."
 
-# Longer answers
+# Longer answers, auto-detect base model
 python 03_test_model.py \
   --checkpoint ./checkpoints \
   --question "Explain how to configure SR-IOV for a virtual machine." \

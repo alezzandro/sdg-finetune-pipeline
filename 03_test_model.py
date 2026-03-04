@@ -1,8 +1,9 @@
-"""Compare answers from the base model and the fine-tuned (LoRA) model.
+"""Compare answers from a reference model and the fine-tuned (LoRA) model.
 
-Loads the LoRA checkpoint, resolves the original base model from the adapter
-config, and generates answers to the same question from both models so you
-can see the effect of fine-tuning side by side.
+Loads the LoRA checkpoint, then loads a reference model (either specified via
+--base-model or auto-resolved from the adapter config) and generates answers
+to the same question from both models so you can see the effect of fine-tuning
+side by side.
 """
 
 import argparse
@@ -67,10 +68,14 @@ def generate_answer(model, tokenizer, messages, max_new_tokens=256,
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Compare base model vs fine-tuned model answers."
+        description="Compare a reference model vs fine-tuned model answers."
     )
     parser.add_argument("--checkpoint", type=str, default="./checkpoints",
                         help="Path to the LoRA checkpoint directory (default: ./checkpoints)")
+    parser.add_argument("--base-model", type=str, default=None,
+                        help="HuggingFace model ID for the reference model "
+                             "(default: auto-detected from adapter config). "
+                             "Use an instruct model for a meaningful comparison.")
     parser.add_argument("--question", type=str, required=True,
                         help="Question to ask both models")
     parser.add_argument("--system-prompt", type=str, default=None,
@@ -88,14 +93,18 @@ def main():
         messages.append({"role": "system", "content": args.system_prompt})
     messages.append({"role": "user", "content": args.question})
 
-    base_model_id = resolve_base_model(args.checkpoint)
-    print(f"Base model:  {base_model_id}")
-    print(f"Checkpoint:  {args.checkpoint}")
-    print(f"Question:    {args.question}")
+    adapter_base = resolve_base_model(args.checkpoint)
+    base_model_id = args.base_model or adapter_base
+    if args.base_model:
+        print(f"Reference model:  {base_model_id}  (user-specified)")
+    else:
+        print(f"Reference model:  {base_model_id}  (from adapter config)")
+    print(f"Checkpoint:       {args.checkpoint}")
+    print(f"Question:         {args.question}")
     print()
 
-    # --- Base model ---
-    print("Loading base model...")
+    # --- Reference model ---
+    print("Loading reference model...")
     base_tokenizer, base_model = load_tokenizer_and_model(base_model_id, load_in_4bit=use_4bit)
     base_answer = generate_answer(base_model, base_tokenizer, messages, args.max_new_tokens)
 
@@ -114,9 +123,7 @@ def main():
     # --- Display ---
     separator = "-" * 72
     print(f"\n{'=' * 72}")
-    print(f"BASE MODEL ANSWER  ({base_model_id})")
-    print("NOTE: The base model is not instruction-tuned. Its output may be")
-    print("incoherent — this is expected and shows the effect of fine-tuning.")
+    print(f"REFERENCE MODEL ANSWER  ({base_model_id})")
     print(separator)
     print(base_answer)
     print(f"\n{'=' * 72}")
