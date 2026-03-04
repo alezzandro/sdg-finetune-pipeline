@@ -9,6 +9,8 @@ then fine-tunes a smaller local model on that dataset with LoRA + SFT.
 | 0 | `00_convert_docs.py` | [pypandoc](https://github.com/JessicaTegworthy/pypandoc) / [docling](https://github.com/DS4SD/docling) | Convert `.adoc` and `.pdf` files to Markdown |
 | 1 | `01_generate_dataset.py` | [SDG Hub](https://github.com/instructlab/sdg) | Extract QA pairs from the Markdown corpus via a remote LLM |
 | 2 | `02_train_model.py` | [Training Hub](https://github.com/Red-Hat-AI-Innovation-Team/training_hub) | Fine-tune a small model on the generated dataset (LoRA + SFT) |
+| 3 | `03_test_model.py` | [PEFT](https://github.com/huggingface/peft) / [transformers](https://github.com/huggingface/transformers) | Compare base vs fine-tuned model answers |
+| 4 | `04_merge_model.py` | [PEFT](https://github.com/huggingface/peft) | Merge LoRA adapter into the base model for standalone deployment |
 
 ## Target Environment
 
@@ -283,13 +285,81 @@ you fine-tune models up to ~7 B parameters comfortably.
 
 With QLoRA 4-bit, larger models (7 B+) also fit in 24 GB.
 
+## Step 3: Test the Fine-Tuned Model
+
+`03_test_model.py` loads both the original base model and the LoRA-adapted
+model, sends the same question to each, and prints the answers side by side so
+you can see the effect of fine-tuning.
+
+The base model identifier is read automatically from the checkpoint's
+`adapter_config.json`.
+
+### Arguments
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--checkpoint` | No | `./checkpoints` | Path to the LoRA checkpoint directory |
+| `--question` | Yes | | Question to ask both models |
+| `--system-prompt` | No | | System prompt prepended to the conversation |
+| `--max-new-tokens` | No | `256` | Max tokens to generate |
+| `--no-quantize` | No | | Disable 4-bit quantization |
+
+### Examples
+
+```bash
+# Basic comparison
+python 03_test_model.py \
+  --checkpoint ./checkpoints \
+  --question "How do I expose a VM with a Kubernetes service?"
+
+# With a system prompt
+python 03_test_model.py \
+  --checkpoint ./checkpoints \
+  --question "What is the difference between masquerade and bridge networking?" \
+  --system-prompt "You are an expert in OpenShift Virtualization networking."
+
+# Longer answers
+python 03_test_model.py \
+  --checkpoint ./checkpoints \
+  --question "Explain how to configure SR-IOV for a virtual machine." \
+  --max-new-tokens 512
+```
+
+## Step 4: Merge and Export the Model
+
+`04_merge_model.py` merges the LoRA adapter into the base model weights and
+saves a standalone model directory. The merged model can be loaded directly
+with `transformers` or served via an inference engine like vLLM without
+requiring PEFT at inference time.
+
+### Arguments
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--checkpoint` | No | `./checkpoints` | Path to the LoRA checkpoint directory |
+| `--output` | No | `./merged-model` | Output directory for the merged model |
+| `--no-quantize` | No | | Disable 4-bit quantization when loading |
+
+### Examples
+
+```bash
+# Merge with default paths
+python 04_merge_model.py
+
+# Custom checkpoint and output
+python 04_merge_model.py \
+  --checkpoint ./checkpoints \
+  --output ./my-merged-model
+```
+
 ## Project Structure
 
 ```
 00_convert_docs.py      # Step 0 — document conversion (.adoc / .pdf -> .md)
 01_generate_dataset.py  # Step 1 — synthetic data generation
 02_train_model.py       # Step 2 — LoRA + SFT fine-tuning
-corpus.md               # Example source document (output of step 0, input to step 1)
+03_test_model.py        # Step 3 — compare base vs fine-tuned model answers
+04_merge_model.py       # Step 4 — merge LoRA adapter and export standalone model
 README.md
 ```
 
