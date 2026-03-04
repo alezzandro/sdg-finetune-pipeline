@@ -49,7 +49,8 @@ def resolve_base_model(checkpoint_path):
     return config["base_model_name_or_path"]
 
 
-def generate_answer(model, tokenizer, messages, max_new_tokens=256):
+def generate_answer(model, tokenizer, messages, max_new_tokens=256,
+                    repetition_penalty=1.2):
     inputs = tokenizer.apply_chat_template(
         messages, tokenize=True, add_generation_prompt=True, return_tensors="pt"
     ).to(model.device)
@@ -58,6 +59,7 @@ def generate_answer(model, tokenizer, messages, max_new_tokens=256):
         inputs,
         max_new_tokens=max_new_tokens,
         do_sample=False,
+        repetition_penalty=repetition_penalty,
     )
     new_tokens = outputs[0][inputs.shape[-1]:]
     return tokenizer.decode(new_tokens, skip_special_tokens=True)
@@ -112,11 +114,13 @@ def main():
     # --- Display ---
     separator = "-" * 72
     print(f"\n{'=' * 72}")
-    print("BASE MODEL ANSWER")
+    print(f"BASE MODEL ANSWER  ({base_model_id})")
+    print("NOTE: The base model is not instruction-tuned. Its output may be")
+    print("incoherent — this is expected and shows the effect of fine-tuning.")
     print(separator)
     print(base_answer)
     print(f"\n{'=' * 72}")
-    print("FINE-TUNED MODEL ANSWER")
+    print("FINE-TUNED MODEL ANSWER  (LoRA adapter)")
     print(separator)
     print(ft_answer)
     print("=" * 72)
