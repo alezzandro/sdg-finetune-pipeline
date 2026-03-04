@@ -95,7 +95,7 @@ Inside the container, install Python 3.12 and system dependencies, then create
 a virtual environment:
 
 ```bash
-dnf install -y git python3.12 python3.12-pip python3.12-devel
+dnf install -y git gcc python3.12 python3.12-pip python3.12-devel
 git clone https://github.com/alezzandro/sdg-finetune-pipeline.git && cd sdg-finetune-pipeline
 python3.12 -m venv venv && source venv/bin/activate
 pip3.12 install --upgrade pip
@@ -116,7 +116,7 @@ root:
 ```dockerfile
 FROM registry.access.redhat.com/ubi9/ubi
 
-RUN dnf install -y git python3.12 python3.12-pip python3.12-devel && \
+RUN dnf install -y git gcc python3.12 python3.12-pip python3.12-devel && \
     dnf clean all
 
 WORKDIR /workspace
