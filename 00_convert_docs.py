@@ -38,6 +38,43 @@ def find_files(input_paths):
 _pandoc_checked = False
 
 
+def _download_pandoc():
+    """Download a pandoc binary from GitHub releases (no system ar needed)."""
+    import json
+    import platform
+    import tarfile
+    import tempfile
+    import urllib.request
+
+    arch = "arm64" if platform.machine() == "aarch64" else "amd64"
+    api_url = "https://api.github.com/repos/jgm/pandoc/releases/latest"
+
+    print("  Fetching latest pandoc release info...")
+    with urllib.request.urlopen(api_url) as resp:
+        tag = json.loads(resp.read())["tag_name"]
+
+    url = f"https://github.com/jgm/pandoc/releases/download/{tag}/pandoc-{tag}-linux-{arch}.tar.gz"
+    target_dir = os.path.join(os.path.expanduser("~"), ".local", "bin")
+    os.makedirs(target_dir, exist_ok=True)
+
+    print(f"  Downloading pandoc {tag}...")
+    tarball_path = os.path.join(tempfile.gettempdir(), f"pandoc-{tag}.tar.gz")
+    urllib.request.urlretrieve(url, tarball_path)
+
+    with tarfile.open(tarball_path) as tar:
+        for member in tar.getmembers():
+            if member.name.endswith("/bin/pandoc"):
+                member.name = "pandoc"
+                tar.extract(member, target_dir, filter="data")
+                break
+
+    os.remove(tarball_path)
+    pandoc_path = os.path.join(target_dir, "pandoc")
+    os.chmod(pandoc_path, 0o755)
+    os.environ["PATH"] = target_dir + ":" + os.environ.get("PATH", "")
+    print(f"  Installed pandoc {tag} to {pandoc_path}")
+
+
 def _ensure_pandoc():
     """Ensure a pandoc version that supports the asciidoc reader (>= 2.15)."""
     global _pandoc_checked
@@ -53,8 +90,7 @@ def _ensure_pandoc():
         print(f"System pandoc {version} is too old (need >= 2.15 for AsciiDoc).")
     except OSError:
         print("No system pandoc found.")
-    print("Downloading a compatible pandoc via pypandoc...")
-    pypandoc.download_pandoc()
+    _download_pandoc()
     _pandoc_checked = True
 
 
