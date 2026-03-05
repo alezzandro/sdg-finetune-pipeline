@@ -112,24 +112,8 @@ python3.12 00_convert_docs.py docs/ -o corpus.md
 
 ### Option B: Build a Custom Image (Containerfile)
 
-For a reproducible, pre-built image, create a `Containerfile` in the project
-root:
-
-```dockerfile
-FROM registry.access.redhat.com/ubi9/ubi
-
-RUN dnf install -y git gcc python3.12 python3.12-pip python3.12-devel && \
-    dnf clean all
-
-WORKDIR /workspace
-RUN python3.12 -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-
-RUN pip3.12 install --no-cache-dir --upgrade pip && \
-    pip3.12 install --no-cache-dir sdg-hub training-hub[lora] pypandoc docling
-
-COPY . /workspace
-```
+A `Containerfile` is included in the repository with all dependencies
+pre-installed.
 
 Build and run:
 
@@ -369,6 +353,7 @@ python 04_merge_model.py \
 02_train_model.py       # Step 2 — LoRA + SFT fine-tuning
 03_test_model.py        # Step 3 — compare base vs fine-tuned model answers
 04_merge_model.py       # Step 4 — merge LoRA adapter and export standalone model
+Containerfile           # UBI9 container image with all dependencies
 README.md
 ```
 
