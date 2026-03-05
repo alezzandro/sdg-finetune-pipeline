@@ -232,6 +232,13 @@ requiring hand-crafted in-context learning examples.
 | `--max-concurrency` | No | `10` | Max concurrent LLM requests |
 | `--timeout` | No | `600` | Per-request timeout in seconds |
 | `--keep-cot` | No | | Keep reasoning / chain-of-thought tags in output |
+| `--batch-size` | No | `100` | Chunks per batch; results are checkpointed after each batch |
+| `--resume` | No | | Resume from the last checkpoint instead of starting over |
+
+> **Resilient processing:** With large documents the script processes chunks in
+> batches (default 100). After each batch, results are saved to a checkpoint
+> file. If the remote LLM connection drops mid-run, re-run the same command
+> with `--resume` to continue from the last completed batch.
 
 ## Step 2: Fine-Tune a Model
 

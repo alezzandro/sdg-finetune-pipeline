@@ -1,4 +1,5 @@
 import os
+import hashlib
 import argparse
 import re
 import pandas as pd
@@ -106,6 +107,10 @@ def main():
                         help="Per-request timeout in seconds (default: 600)")
     parser.add_argument("--keep-cot", action="store_true",
                         help="Keep reasoning/chain-of-thought tags in output")
+    parser.add_argument("--batch-size", type=int, default=100,
+                        help="Chunks per batch; results are checkpointed after each batch (default: 100)")
+    parser.add_argument("--resume", action="store_true",
+                        help="Resume from the last checkpoint instead of starting over")
     args = parser.parse_args()
 
     # --- 1. Load and chunk the source document ---
@@ -132,9 +137,29 @@ def main():
     if len(seen) < len(document_chunks):
         print(f"Removed {len(document_chunks) - len(seen)} duplicate chunks.")
 
-    input_dataset = Dataset.from_list(data_list)
+    # --- 3. Checkpoint / resume logic ---
+    input_hash = hashlib.sha256(full_text.encode()).hexdigest()[:12]
+    checkpoint_path = args.output + f".checkpoint.{input_hash}.csv"
 
-    # --- 3. Load and configure the SDG flow ---
+    completed_docs = set()
+    if args.resume and os.path.exists(checkpoint_path):
+        prev_df = pd.read_csv(checkpoint_path)
+        completed_docs = set(prev_df["document"].tolist())
+        print(f"Resuming: loaded {len(prev_df)} rows from checkpoint "
+              f"({len(completed_docs)} chunks already processed).")
+    elif os.path.exists(checkpoint_path) and not args.resume:
+        os.remove(checkpoint_path)
+        print("Existing checkpoint discarded (use --resume to continue from it).")
+
+    remaining = [d for d in data_list if d["document"] not in completed_docs]
+    if not remaining:
+        print("All chunks already processed. Finalizing output...")
+        _finalize(checkpoint_path, args)
+        return
+
+    print(f"{len(remaining)} chunks remaining to process.")
+
+    # --- 4. Load and configure the SDG flow ---
     print(f"Loading flow: {args.flow}")
     FlowRegistry.discover_flows()
     flow_path = FlowRegistry.get_flow_path(args.flow)
@@ -150,16 +175,37 @@ def main():
         timeout=args.timeout,
     )
 
-    # --- 4. Generate ---
-    print(f"Processing {len(document_chunks)} chunks (max_concurrency={args.max_concurrency})...")
-    try:
-        result = flow.generate(input_dataset, max_concurrency=args.max_concurrency)
-    except Exception as e:
-        print(f"Generation failed: {e}")
-        return
+    # --- 5. Generate in batches with checkpoints ---
+    total_batches = (len(remaining) + args.batch_size - 1) // args.batch_size
+    for batch_idx in range(total_batches):
+        start = batch_idx * args.batch_size
+        end = min(start + args.batch_size, len(remaining))
+        batch = remaining[start:end]
+        batch_ds = Dataset.from_list(batch)
 
-    # --- 5. Clean and export ---
-    df = result.to_pandas()
+        print(f"\n--- Batch {batch_idx + 1}/{total_batches} "
+              f"(chunks {start + 1}–{end} of {len(remaining)}) ---")
+        try:
+            result = flow.generate(batch_ds, max_concurrency=args.max_concurrency)
+        except Exception as e:
+            print(f"\nBatch {batch_idx + 1} failed: {e}")
+            print(f"Progress saved to {checkpoint_path}. "
+                  f"Re-run with --resume to continue.")
+            return
+
+        batch_df = result.to_pandas()
+        write_header = not os.path.exists(checkpoint_path)
+        batch_df.to_csv(checkpoint_path, mode="a", index=False, header=write_header)
+        print(f"Checkpoint saved ({end} / {len(remaining)} chunks done).")
+
+    # --- 6. Finalize ---
+    _finalize(checkpoint_path, args)
+
+
+def _finalize(checkpoint_path, args):
+    """Merge checkpoint into the final output CSV and clean up."""
+    df = pd.read_csv(checkpoint_path)
+
     if not args.keep_cot:
         print("Stripping reasoning traces from output columns...")
         for col in df.columns:
@@ -167,6 +213,7 @@ def main():
                 df[col] = df[col].apply(strip_reasoning_traces)
 
     df.to_csv(args.output, index=False)
+    os.remove(checkpoint_path)
     print(f"\nDone — {len(df)} rows saved to {args.output}")
 
 
