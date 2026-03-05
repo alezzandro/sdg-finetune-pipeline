@@ -1,4 +1,5 @@
 import os
+import json
 import hashlib
 import argparse
 import re
@@ -140,21 +141,24 @@ def main():
     # --- 3. Checkpoint / resume logic ---
     input_hash = hashlib.sha256(full_text.encode()).hexdigest()[:12]
     checkpoint_path = args.output + f".checkpoint.{input_hash}.csv"
+    meta_path = checkpoint_path + ".meta"
 
-    completed_docs = set()
-    if args.resume and os.path.exists(checkpoint_path):
-        prev_df = pd.read_csv(checkpoint_path)
-        completed_docs = set(prev_df["document"].tolist())
-        print(f"Resuming: loaded {len(prev_df)} rows from checkpoint "
-              f"({len(completed_docs)} chunks already processed).")
-    elif os.path.exists(checkpoint_path) and not args.resume:
-        os.remove(checkpoint_path)
+    chunks_done = 0
+    if args.resume and os.path.exists(meta_path):
+        with open(meta_path, "r") as mf:
+            meta = json.load(mf)
+        chunks_done = meta.get("chunks_processed", 0)
+        print(f"Resuming: {chunks_done} / {len(data_list)} input chunks already processed.")
+    elif not args.resume:
+        for f in (checkpoint_path, meta_path):
+            if os.path.exists(f):
+                os.remove(f)
         print("Existing checkpoint discarded (use --resume to continue from it).")
 
-    remaining = [d for d in data_list if d["document"] not in completed_docs]
+    remaining = data_list[chunks_done:]
     if not remaining:
         print("All chunks already processed. Finalizing output...")
-        _finalize(checkpoint_path, args)
+        _finalize(checkpoint_path, meta_path, args)
         return
 
     print(f"{len(remaining)} chunks remaining to process.")
@@ -196,13 +200,17 @@ def main():
         batch_df = result.to_pandas()
         write_header = not os.path.exists(checkpoint_path)
         batch_df.to_csv(checkpoint_path, mode="a", index=False, header=write_header)
+
+        absolute_done = (len(data_list) - len(remaining)) + end
+        with open(meta_path, "w") as mf:
+            json.dump({"chunks_processed": absolute_done}, mf)
         print(f"Checkpoint saved ({end} / {len(remaining)} chunks done).")
 
     # --- 6. Finalize ---
-    _finalize(checkpoint_path, args)
+    _finalize(checkpoint_path, meta_path, args)
 
 
-def _finalize(checkpoint_path, args):
+def _finalize(checkpoint_path, meta_path, args):
     """Merge checkpoint into the final output CSV and clean up."""
     df = pd.read_csv(checkpoint_path)
 
@@ -213,7 +221,9 @@ def _finalize(checkpoint_path, args):
                 df[col] = df[col].apply(strip_reasoning_traces)
 
     df.to_csv(args.output, index=False)
-    os.remove(checkpoint_path)
+    for f in (checkpoint_path, meta_path):
+        if os.path.exists(f):
+            os.remove(f)
     print(f"\nDone — {len(df)} rows saved to {args.output}")
 
 
