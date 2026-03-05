@@ -98,7 +98,7 @@ Inside the container, install Python 3.12 and system dependencies, then create
 a virtual environment:
 
 ```bash
-dnf install -y git gcc python3.12 python3.12-pip python3.12-devel
+dnf install -y git gcc python3.12 python3.12-pip python3.12-devel libxcb mesa-libGL
 git clone https://github.com/alezzandro/sdg-finetune-pipeline.git && cd sdg-finetune-pipeline
 python3.12 -m venv venv && source venv/bin/activate
 pip3.12 install --upgrade pip

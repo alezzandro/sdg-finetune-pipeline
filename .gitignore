@@ -1,0 +1,27 @@
+# Session / development notes (not for public repo)
+SESSION_NOTES.md
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Training artifacts
+output/
+*.ckpt
+*.safetensors

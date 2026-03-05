@@ -116,14 +116,21 @@ def main():
     print(f"Preprocessed input into {len(document_chunks)} chunks "
           f"(max {args.max_chunk_chars} chars each).")
 
-    # --- 2. Build input dataset ---
+    # --- 2. Build input dataset (deduplicated) ---
+    seen = set()
     data_list = []
     for chunk in document_chunks:
+        if chunk in seen:
+            continue
+        seen.add(chunk)
         data_list.append({
             "document": chunk,
             "document_outline": args.outline,
             "domain": args.domain,
         })
+
+    if len(seen) < len(document_chunks):
+        print(f"Removed {len(document_chunks) - len(seen)} duplicate chunks.")
 
     input_dataset = Dataset.from_list(data_list)
 

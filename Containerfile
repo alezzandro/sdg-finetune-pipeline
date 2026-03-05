@@ -1,6 +1,6 @@
 FROM registry.access.redhat.com/ubi9/ubi
 
-RUN dnf install -y git gcc python3.12 python3.12-pip python3.12-devel && \
+RUN dnf install -y git gcc python3.12 python3.12-pip python3.12-devel libxcb mesa-libGL && \
     dnf clean all
 
 WORKDIR /workspace
