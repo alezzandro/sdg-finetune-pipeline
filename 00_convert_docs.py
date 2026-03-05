@@ -95,19 +95,38 @@ def _ensure_pandoc():
     _pandoc_checked = True
 
 
+ASCIIDOC_ATTRIBUTES = {
+    "product-title": "OpenShift Container Platform",
+    "product-version": "",
+    "VirtProductName": "OpenShift Virtualization",
+    "op-system-base-full": "Red Hat Enterprise Linux (RHEL)",
+    "op-system-base": "RHEL",
+    "kebab": "&#8942;",
+}
+
+
 def _preprocess_adoc(text):
     """Clean AsciiDoc content so pandoc's asciidoc reader can handle it.
 
-    Strips include:: directives (referenced files are typically unavailable
-    when docs are copied without the full directory tree) and AsciiDoctor-
-    specific block attributes that pandoc does not support.
+    Resolves common AsciiDoc attribute variables, strips include:: directives
+    (referenced files are typically unavailable when docs are copied without
+    the full directory tree), and removes AsciiDoctor-specific block
+    attributes that pandoc does not support.
     """
+    for attr_name, match in re.findall(r'^:([A-Za-z][\w-]*?):\s*(.*?)\s*$', text, flags=re.MULTILINE):
+        ASCIIDOC_ATTRIBUTES[attr_name] = match
+
+    for name, value in ASCIIDOC_ATTRIBUTES.items():
+        text = text.replace(f"{{{name}}}", value)
+
+    text = re.sub(r'\{[A-Za-z][\w-]*\}', '', text)
+
     text = re.sub(r'^include::.*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^\[id="[^"]*".*\]\s*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^ifdef::.*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^ifndef::.*$', '', text, flags=re.MULTILINE)
     text = re.sub(r'^endif::.*$', '', text, flags=re.MULTILINE)
-    text = re.sub(r'^:_content-type:.*$', '', text, flags=re.MULTILINE)
+    text = re.sub(r'^:[\w-]+:.*$', '', text, flags=re.MULTILINE)
     return text
 
 

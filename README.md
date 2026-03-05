@@ -57,7 +57,8 @@ python 02_train_model.py \
   --model "ibm-granite/granite-3.3-2b-instruct" \
   --output ./checkpoints \
   --system-prompt "You are an expert in OpenShift Virtualization networking." \
-  --epochs 3 \
+  --epochs 1 \
+  --learning-rate 5e-5 \
   --max-seq-len 512
 ```
 
@@ -240,6 +241,12 @@ Unsloth for speed).
 
 On the L4 (24 GB), QLoRA 4-bit quantization is enabled by default, which lets
 you fine-tune models up to ~7 B parameters comfortably.
+
+> **Avoiding catastrophic forgetting:** When fine-tuning instruct models, use
+> a low learning rate (`5e-5`) and fewer epochs (`1`–`2`). Aggressive settings
+> (e.g. `2e-4` / `3` epochs on small datasets) can cause the model to overfit
+> and lose its general instruction-following ability, producing shorter and
+> less coherent answers than the original model.
 
 ### Arguments
 

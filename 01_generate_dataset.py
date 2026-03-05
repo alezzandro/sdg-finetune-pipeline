@@ -20,11 +20,12 @@ def strip_reasoning_traces(text):
 
 
 def preprocess_technical_text(text):
-    """Strip base64 images and data URIs that waste context tokens."""
+    """Strip base64 images, data URIs, and leftover AsciiDoc variables."""
     text = re.sub(r'<figure>.*?</figure>', '', text, flags=re.DOTALL)
     text = re.sub(r'<img\s[^>]*data:image/[^>]*>', '', text, flags=re.DOTALL)
     text = re.sub(r'!\[.*?\]\(data:image/[^)]+\)', '', text)
     text = re.sub(r'data:image/[^;]+;base64,[A-Za-z0-9+/=\s]+', '', text)
+    text = re.sub(r'\{[A-Za-z][\w-]*\}', '', text)
     return text
 
 
