@@ -108,8 +108,8 @@ def main():
                         help="Per-request timeout in seconds (default: 600)")
     parser.add_argument("--keep-cot", action="store_true",
                         help="Keep reasoning/chain-of-thought tags in output")
-    parser.add_argument("--batch-size", type=int, default=100,
-                        help="Chunks per batch; results are checkpointed after each batch (default: 100)")
+    parser.add_argument("--batch-size", type=int, default=25,
+                        help="Chunks per batch; results are checkpointed after each batch (default: 25)")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from the last checkpoint instead of starting over")
     args = parser.parse_args()
@@ -180,6 +180,7 @@ def main():
     )
 
     # --- 5. Generate in batches with checkpoints ---
+    already_done = len(data_list) - len(remaining)
     total_batches = (len(remaining) + args.batch_size - 1) // args.batch_size
     for batch_idx in range(total_batches):
         start = batch_idx * args.batch_size
@@ -187,24 +188,27 @@ def main():
         batch = remaining[start:end]
         batch_ds = Dataset.from_list(batch)
 
+        abs_start = already_done + start + 1
+        abs_end = already_done + end
         print(f"\n--- Batch {batch_idx + 1}/{total_batches} "
-              f"(chunks {start + 1}–{end} of {len(remaining)}) ---")
+              f"(chunks {abs_start}–{abs_end} of {len(data_list)}) ---")
         try:
             result = flow.generate(batch_ds, max_concurrency=args.max_concurrency)
         except Exception as e:
             print(f"\nBatch {batch_idx + 1} failed: {e}")
             print(f"Progress saved to {checkpoint_path}. "
-                  f"Re-run with --resume to continue.")
+                  f"Re-run with --resume to continue. "
+                  f"Tip: try a smaller --batch-size (current: {args.batch_size}) "
+                  f"if failures are frequent.")
             return
 
         batch_df = result.to_pandas()
         write_header = not os.path.exists(checkpoint_path)
         batch_df.to_csv(checkpoint_path, mode="a", index=False, header=write_header)
 
-        absolute_done = (len(data_list) - len(remaining)) + end
         with open(meta_path, "w") as mf:
-            json.dump({"chunks_processed": absolute_done}, mf)
-        print(f"Checkpoint saved ({end} / {len(remaining)} chunks done).")
+            json.dump({"chunks_processed": abs_end}, mf)
+        print(f"Checkpoint saved ({abs_end} / {len(data_list)} total chunks done).")
 
     # --- 6. Finalize ---
     _finalize(checkpoint_path, meta_path, args)
