@@ -9,6 +9,10 @@ RUN python3.12 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 RUN pip3.12 install --no-cache-dir --upgrade pip && \
-    pip3.12 install --no-cache-dir sdg-hub training-hub[lora] pypandoc docling vllm
+    pip3.12 install --no-cache-dir sdg-hub training-hub[lora] pypandoc docling
+
+# vllm needs CUDA at install time (CDI not available during podman build).
+# Install it once inside the running container:
+#   pip3.12 install vllm
 
 COPY . /workspace

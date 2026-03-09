@@ -129,13 +129,14 @@ python3.12 00_convert_docs.py docs/ -o corpus.md
 
 ### Option B: Build a Custom Image (Containerfile)
 
-A `Containerfile` is included in the repository with all dependencies
-pre-installed (including vLLM). The build requires GPU access because
-vLLM needs CUDA at install time:
+A `Containerfile` is included in the repository with all pipeline
+dependencies pre-installed. **vLLM** is not included in the image
+because it requires CUDA at install time (CDI device passthrough is not
+available during `podman build`). Install it once after launching the
+container with GPU access.
 
 ```bash
-podman build --device nvidia.com/gpu=all --security-opt=label=disable \
-  -t sdg-finetune-pipeline .
+podman build -t sdg-finetune-pipeline .
 
 # Steps 0–1 (no GPU needed)
 podman run --rm \
@@ -154,6 +155,24 @@ podman run --rm \
     --dataset output/dataset.csv \
     --model ibm-granite/granite-3.3-2b-instruct \
     --output output/checkpoints
+```
+
+To use the local LLM server, launch an interactive container and install
+vLLM first:
+
+```bash
+podman run -it --rm \
+  --device nvidia.com/gpu=all \
+  --security-opt=label=disable \
+  -v ./:/workspace:Z \
+  -v hf-cache:/root/.cache/huggingface \
+  -w /workspace \
+  sdg-finetune-pipeline /bin/bash
+
+# Inside the container (one-time install):
+pip3.12 install vllm
+python3.12 00_serve_model.py --preset 14b
+# ... wait for readiness, then run 01_generate_dataset.py
 ```
 
 ### GPU Passthrough Reference
