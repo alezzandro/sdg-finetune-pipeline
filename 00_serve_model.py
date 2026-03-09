@@ -131,8 +131,8 @@ def main():
                         help="Quantization method (required for 4-bit models)")
     parser.add_argument("--port", type=int, default=8000,
                         help="Port for the API server (default: 8000)")
-    parser.add_argument("--max-model-len", type=int, default=4096,
-                        help="Maximum context length (default: 4096)")
+    parser.add_argument("--max-model-len", type=int, default=16384,
+                        help="Maximum context length (default: 16384)")
     parser.add_argument("--gpu-memory-utilization", type=float, default=0.90,
                         help="Fraction of GPU memory to use (default: 0.90)")
     parser.add_argument("--tensor-parallel-size", type=int, default=1,

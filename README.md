@@ -249,7 +249,7 @@ OpenAI-compatible API that `01_generate_dataset.py` can use directly.
 | `--model` | No | | HuggingFace model ID (overrides `--preset`) |
 | `--quantization` | No | | Quantization method: `awq` or `gptq` |
 | `--port` | No | `8000` | Port for the API server |
-| `--max-model-len` | No | `4096` | Maximum context length |
+| `--max-model-len` | No | `16384` | Maximum context length (input + output tokens) |
 | `--gpu-memory-utilization` | No | `0.90` | Fraction of GPU memory to use |
 | `--tensor-parallel-size` | No | `1` | Number of GPUs for tensor parallelism |
 | `--stop` | No | | Stop a running vLLM server |
