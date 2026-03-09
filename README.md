@@ -1,13 +1,15 @@
 # sdg-finetune-pipeline
 
 A three-step pipeline that converts technical documentation (AsciiDoc / PDF)
-to Markdown, generates a synthetic QA dataset from it using a large remote LLM,
-then fine-tunes a smaller local model on that dataset with LoRA + SFT.
+to Markdown, generates a synthetic QA dataset from it using a large LLM
+(remote or locally served), then fine-tunes a smaller local model on that
+dataset with LoRA + SFT.
 
 | Step | Script | Tool | Purpose |
 |------|--------|------|---------|
 | 0 | `00_convert_docs.py` | [pypandoc](https://github.com/JessicaTegworthy/pypandoc) / [docling](https://github.com/DS4SD/docling) | Convert `.adoc` and `.pdf` files to Markdown |
-| 1 | `01_generate_dataset.py` | [SDG Hub](https://github.com/instructlab/sdg) | Extract QA pairs from the Markdown corpus via a remote LLM |
+| — | `00_serve_model.py` | [vLLM](https://github.com/vllm-project/vllm) | (Optional) Serve a local LLM for dataset generation |
+| 1 | `01_generate_dataset.py` | [SDG Hub](https://github.com/instructlab/sdg) | Extract QA pairs from the Markdown corpus via an LLM |
 | 2 | `02_train_model.py` | [Training Hub](https://github.com/Red-Hat-AI-Innovation-Team/training_hub) | Fine-tune a small model on the generated dataset (LoRA + SFT) |
 | 3 | `03_test_model.py` | [PEFT](https://github.com/huggingface/peft) / [transformers](https://github.com/huggingface/transformers) | Compare base vs fine-tuned model answers |
 | 4 | `04_merge_model.py` | [PEFT](https://github.com/huggingface/peft) | Merge LoRA adapter into the base model for standalone deployment |
@@ -23,7 +25,7 @@ This pipeline is designed for **RHEL AI 1.5** on an **AWS g6.xlarge** instance
 | GPU | NVIDIA L4 24 GB (or equivalent) |
 | Python | 3.12 |
 | System | `pandoc` auto-downloaded by the script if missing or too old |
-| Remote LLM | Any OpenAI-compatible endpoint (for step 1 only) |
+| LLM for step 1 | Any OpenAI-compatible endpoint — remote or local (see `00_serve_model.py`) |
 
 ## Quick Start
 
@@ -36,12 +38,14 @@ pip install --upgrade pip
 pip install sdg-hub
 pip install training-hub[lora]
 pip install pypandoc docling
+pip install vllm            # optional — only needed for local LLM serving
 
 # Step 0 — convert AsciiDoc docs to a single Markdown file
 # (pandoc is auto-downloaded on first run if missing or too old)
 python 00_convert_docs.py docs/ -o corpus.md
 
-# Step 1 — generate dataset (uses a remote LLM, no GPU needed)
+# Step 1 — generate dataset
+# Option A: use a remote LLM endpoint
 python 01_generate_dataset.py \
   --model "openai/qwen3-14b" \
   --url "$LLM_ENDPOINT" \
@@ -50,6 +54,15 @@ python 01_generate_dataset.py \
   --output dataset.csv \
   --domain "Infrastructure" \
   --outline "OpenShift Virtualization Networking"
+
+# Option B: serve a local LLM first (in a separate terminal)
+#   python 00_serve_model.py --preset 7b
+# then generate using the local server:
+#   python 01_generate_dataset.py \
+#     --model "hosted_vllm/Qwen/Qwen2.5-7B-Instruct" \
+#     --url http://localhost:8000/v1 --token dummy \
+#     --input corpus.md --output dataset.csv \
+#     --domain "Infrastructure" --outline "OpenShift Virtualization Networking"
 
 # Step 2 — fine-tune a small model on the GPU
 python 02_train_model.py \
@@ -105,6 +118,7 @@ pip3.12 install --upgrade pip
 pip3.12 install sdg-hub
 pip3.12 install training-hub[lora]
 pip3.12 install pypandoc docling
+pip3.12 install vllm            # optional — only needed for local LLM serving
 
 # Now run the pipeline steps as shown in Quick Start
 python3.12 00_convert_docs.py docs/ -o corpus.md
@@ -207,10 +221,69 @@ python 00_convert_docs.py docs/ --no-merge -o converted/
 python 00_convert_docs.py overview.adoc modules/ architecture.pdf -o corpus.md
 ```
 
+## Serving a Local LLM (Optional)
+
+If you don't have a reliable remote LLM endpoint, you can serve a model
+locally on the GPU using `00_serve_model.py` (a thin wrapper around
+[vLLM](https://github.com/vllm-project/vllm)).  The server exposes an
+OpenAI-compatible API that `01_generate_dataset.py` can use directly.
+
+> **Note:** The local LLM and fine-tuning (step 2) both need the GPU.
+> Stop the vLLM server before running step 2.
+
+### Recommended Models for the L4 24 GB
+
+| Preset | Model | Quantization | VRAM | Quality |
+|--------|-------|-------------|------|---------|
+| `7b` | `Qwen/Qwen2.5-7B-Instruct` | FP16 | ~16 GB | Good |
+| `14b` | `Qwen/Qwen2.5-14B-Instruct-AWQ` | AWQ 4-bit | ~10 GB | Better |
+
+### Arguments
+
+| Argument | Required | Default | Description |
+|----------|----------|---------|-------------|
+| `--preset` | No | `7b` | Predefined model configuration (`7b` or `14b`) |
+| `--model` | No | | HuggingFace model ID (overrides `--preset`) |
+| `--quantization` | No | | Quantization method: `awq` or `gptq` |
+| `--port` | No | `8000` | Port for the API server |
+| `--max-model-len` | No | `4096` | Maximum context length |
+| `--gpu-memory-utilization` | No | `0.90` | Fraction of GPU memory to use |
+| `--tensor-parallel-size` | No | `1` | Number of GPUs for tensor parallelism |
+
+### Examples
+
+```bash
+# Terminal 1 — start the local LLM server (7B preset, safe default)
+python3.12 00_serve_model.py --preset 7b
+
+# Terminal 1 — or use the higher-quality 14B 4-bit model
+python3.12 00_serve_model.py --preset 14b
+
+# Terminal 1 — or specify a custom model
+python3.12 00_serve_model.py --model "meta-llama/Llama-3.1-8B-Instruct"
+```
+
+```bash
+# Terminal 2 — generate dataset using the local server
+python3.12 01_generate_dataset.py \
+  --model "hosted_vllm/Qwen/Qwen2.5-7B-Instruct" \
+  --url http://localhost:8000/v1 \
+  --token dummy \
+  --input corpus.md \
+  --output dataset.csv \
+  --domain "Infrastructure" \
+  --outline "OpenShift Virtualization Networking"
+```
+
+> **Tip:** The `--model` value for `01_generate_dataset.py` must be prefixed
+> with `hosted_vllm/` followed by the exact model name served by vLLM.
+> The `--token` can be any non-empty string (vLLM doesn't authenticate by default).
+
 ## Step 1: Generate a Synthetic Dataset
 
 `01_generate_dataset.py` reads a Markdown document, chunks it, and sends each
-chunk to a remote LLM through an SDG Hub flow to produce question-answer pairs.
+chunk to an LLM (remote or locally served) through an SDG Hub flow to produce
+question-answer pairs.
 
 The default **Key Facts** flow decomposes each chunk into atomic facts and
 generates multiple QA pairs per fact, producing a rich training dataset without
@@ -236,7 +309,7 @@ requiring hand-crafted in-context learning examples.
 | `--resume` | No | | Resume from the last checkpoint instead of starting over |
 
 > **Resilient processing:** With large documents the script processes chunks in
-> batches (default 100). After each batch, results are saved to a checkpoint
+> batches (default 25). After each batch, results are saved to a checkpoint
 > file. If the remote LLM connection drops mid-run, re-run the same command
 > with `--resume` to continue from the last completed batch.
 
@@ -363,6 +436,7 @@ python 04_merge_model.py \
 
 ```
 00_convert_docs.py      # Step 0 — document conversion (.adoc / .pdf -> .md)
+00_serve_model.py       # Optional — serve a local LLM with vLLM
 01_generate_dataset.py  # Step 1 — synthetic data generation
 02_train_model.py       # Step 2 — LoRA + SFT fine-tuning
 03_test_model.py        # Step 3 — compare base vs fine-tuned model answers
