@@ -129,15 +129,13 @@ python3.12 00_convert_docs.py docs/ -o corpus.md
 
 ### Option B: Build a Custom Image (Containerfile)
 
-A `Containerfile` is included in the repository with all pipeline
-dependencies pre-installed. **vLLM** is excluded from the image because
-it requires CUDA at install time; install it at runtime after launching
-the container with GPU access (`pip3.12 install vllm`).
-
-Build and run:
+A `Containerfile` is included in the repository with all dependencies
+pre-installed (including vLLM). The build requires GPU access because
+vLLM needs CUDA at install time:
 
 ```bash
-podman build -t sdg-finetune-pipeline .
+podman build --device nvidia.com/gpu=all --security-opt=label=disable \
+  -t sdg-finetune-pipeline .
 
 # Steps 0–1 (no GPU needed)
 podman run --rm \

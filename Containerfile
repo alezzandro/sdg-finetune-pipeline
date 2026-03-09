@@ -9,9 +9,6 @@ RUN python3.12 -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 RUN pip3.12 install --no-cache-dir --upgrade pip && \
-    pip3.12 install --no-cache-dir sdg-hub training-hub[lora] pypandoc docling
-
-# vllm requires CUDA at install time — install at runtime with GPU access:
-#   pip3.12 install vllm
+    pip3.12 install --no-cache-dir sdg-hub training-hub[lora] pypandoc docling vllm
 
 COPY . /workspace
