@@ -129,8 +129,10 @@ python3.12 00_convert_docs.py docs/ -o corpus.md
 
 ### Option B: Build a Custom Image (Containerfile)
 
-A `Containerfile` is included in the repository with all dependencies
-pre-installed.
+A `Containerfile` is included in the repository with all pipeline
+dependencies pre-installed. **vLLM** is excluded from the image because
+it requires CUDA at install time; install it at runtime after launching
+the container with GPU access (`pip3.12 install vllm`).
 
 Build and run:
 
