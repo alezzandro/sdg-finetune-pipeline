@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Start a local vLLM OpenAI-compatible API server for dataset generation.
+"""Start a local vLLM OpenAI-compatible API server in the background.
 
-This avoids reliance on unstable remote LLM endpoints.  Once the server
-is running, point 01_generate_dataset.py at it:
+The server runs as a background process with output redirected to a log
+file.  Once the startup message appears in the log, you can use
+01_generate_dataset.py against it:
 
     python3.12 01_generate_dataset.py \
         --model "hosted_vllm/<MODEL>" \
@@ -13,10 +14,15 @@ is running, point 01_generate_dataset.py at it:
 
 import argparse
 import os
+import signal
 import shutil
 import subprocess
 import sys
+import time
 
+LOGFILE = "vllm_server.log"
+PIDFILE = "vllm_server.pid"
+READY_MARKER = "Application startup complete"
 
 PRESETS = {
     "7b": {
@@ -47,9 +53,66 @@ def _check_gpu():
         return False
 
 
+def _read_pid():
+    """Read the PID from the pidfile, return None if missing or stale."""
+    if not os.path.exists(PIDFILE):
+        return None
+    with open(PIDFILE) as f:
+        try:
+            pid = int(f.read().strip())
+        except ValueError:
+            return None
+    try:
+        os.kill(pid, 0)
+        return pid
+    except OSError:
+        os.remove(PIDFILE)
+        return None
+
+
+def _stop_server():
+    """Stop a running vLLM server."""
+    pid = _read_pid()
+    if pid is None:
+        print("No running vLLM server found.")
+        return
+    print(f"Stopping vLLM server (PID {pid})...")
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(30):
+        time.sleep(1)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            break
+    else:
+        print(f"Server did not exit gracefully, sending SIGKILL...")
+        os.kill(pid, signal.SIGKILL)
+    for f in (PIDFILE,):
+        if os.path.exists(f):
+            os.remove(f)
+    print("Server stopped.")
+
+
+def _show_status():
+    """Show the status of the vLLM server."""
+    pid = _read_pid()
+    if pid is None:
+        print("No running vLLM server found.")
+        return
+    print(f"vLLM server is running (PID {pid}).")
+    if os.path.exists(LOGFILE):
+        print(f"Log file: {os.path.abspath(LOGFILE)}")
+        with open(LOGFILE) as f:
+            content = f.read()
+        if READY_MARKER in content:
+            print("Status: READY (accepting requests)")
+        else:
+            print("Status: STARTING (model still loading...)")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Start a local vLLM OpenAI-compatible API server.",
+        description="Start/stop a local vLLM OpenAI-compatible API server.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="\n".join([
             "Presets (use --preset instead of --model):",
@@ -74,7 +137,28 @@ def main():
                         help="Fraction of GPU memory to use (default: 0.90)")
     parser.add_argument("--tensor-parallel-size", type=int, default=1,
                         help="Number of GPUs for tensor parallelism (default: 1)")
+    parser.add_argument("--stop", action="store_true",
+                        help="Stop a running vLLM server")
+    parser.add_argument("--status", action="store_true",
+                        help="Show the status of the vLLM server")
     args = parser.parse_args()
+
+    if args.status:
+        _show_status()
+        return
+
+    if args.stop:
+        _stop_server()
+        return
+
+    # Check if a server is already running
+    existing_pid = _read_pid()
+    if existing_pid is not None:
+        print(f"ERROR: vLLM server is already running (PID {existing_pid}).",
+              file=sys.stderr)
+        print(f"Stop it first with: python3.12 00_serve_model.py --stop",
+              file=sys.stderr)
+        sys.exit(1)
 
     # Resolve model from preset or explicit flag
     if args.model:
@@ -115,21 +199,47 @@ def main():
     if quantization:
         cmd += ["--quantization", quantization]
 
-    print(f"\nStarting vLLM server on port {args.port}...")
-    print(f"Model: {model}")
+    # Start the server in the background
+    log_path = os.path.abspath(LOGFILE)
+    print(f"\nStarting vLLM server in background...")
+    print(f"  Model:          {model}")
     if quantization:
-        print(f"Quantization: {quantization}")
-    print(f"Command: {' '.join(cmd)}")
+        print(f"  Quantization:   {quantization}")
+    print(f"  Port:           {args.port}")
+    print(f"  Log file:       {log_path}")
+    print(f"  Command:        {' '.join(cmd)}")
 
-    litellm_prefix = "hosted_vllm" if quantization else "hosted_vllm"
-    print(f"\n--- Use with 01_generate_dataset.py ---")
-    print(f"  --model \"{litellm_prefix}/{model}\"")
-    print(f"  --url http://localhost:{args.port}/v1")
-    print(f"  --token dummy")
+    with open(LOGFILE, "w") as log_f:
+        proc = subprocess.Popen(
+            cmd,
+            stdout=log_f,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+
+    with open(PIDFILE, "w") as pf:
+        pf.write(str(proc.pid))
+
+    print(f"\n  Server started (PID {proc.pid}).")
+    print(f"\n{'='*68}")
+    print(f"  Wait for the model to load — this usually takes 1–3 minutes.")
+    print(f"  Watch the log with:")
+    print(f"    tail -f {LOGFILE}")
+    print(f"")
+    print(f"  The server is ready when you see:")
+    print(f'    "INFO:     Application startup complete."')
+    print(f"")
+    print(f"  Other useful commands:")
+    print(f"    python3.12 00_serve_model.py --status    # check server status")
+    print(f"    python3.12 00_serve_model.py --stop      # stop the server")
+    print(f"    ps aux | grep vllm                       # find vLLM processes")
+    print(f"    kill {proc.pid}                                # stop manually")
+    print(f"{'='*68}")
+    print(f"\n  Once ready, run 01_generate_dataset.py with:")
+    print(f'    --model "hosted_vllm/{model}"')
+    print(f"    --url http://localhost:{args.port}/v1")
+    print(f"    --token dummy")
     print()
-
-    # Replace current process with vllm serve
-    os.execvp("vllm", cmd)
 
 
 if __name__ == "__main__":

@@ -55,14 +55,16 @@ python 01_generate_dataset.py \
   --domain "Infrastructure" \
   --outline "OpenShift Virtualization Networking"
 
-# Option B: serve a local LLM first (in a separate terminal)
+# Option B: serve a local LLM (starts in background, logs to vllm_server.log)
 #   python 00_serve_model.py --preset 7b
+#   tail -f vllm_server.log  # wait for "Application startup complete."
 # then generate using the local server:
 #   python 01_generate_dataset.py \
 #     --model "hosted_vllm/Qwen/Qwen2.5-7B-Instruct" \
 #     --url http://localhost:8000/v1 --token dummy \
 #     --input corpus.md --output dataset.csv \
 #     --domain "Infrastructure" --outline "OpenShift Virtualization Networking"
+# stop when done: python 00_serve_model.py --stop
 
 # Step 2 — fine-tune a small model on the GPU
 python 02_train_model.py \
@@ -225,11 +227,12 @@ python 00_convert_docs.py overview.adoc modules/ architecture.pdf -o corpus.md
 
 If you don't have a reliable remote LLM endpoint, you can serve a model
 locally on the GPU using `00_serve_model.py` (a thin wrapper around
-[vLLM](https://github.com/vllm-project/vllm)).  The server exposes an
+[vLLM](https://github.com/vllm-project/vllm)).  The server starts in the
+**background**, writes logs to `vllm_server.log`, and exposes an
 OpenAI-compatible API that `01_generate_dataset.py` can use directly.
 
 > **Note:** The local LLM and fine-tuning (step 2) both need the GPU.
-> Stop the vLLM server before running step 2.
+> Stop the vLLM server with `--stop` before running step 2.
 
 ### Recommended Models for the L4 24 GB
 
@@ -249,22 +252,29 @@ OpenAI-compatible API that `01_generate_dataset.py` can use directly.
 | `--max-model-len` | No | `4096` | Maximum context length |
 | `--gpu-memory-utilization` | No | `0.90` | Fraction of GPU memory to use |
 | `--tensor-parallel-size` | No | `1` | Number of GPUs for tensor parallelism |
+| `--stop` | No | | Stop a running vLLM server |
+| `--status` | No | | Show whether the server is running and ready |
 
 ### Examples
 
 ```bash
-# Terminal 1 — start the local LLM server (7B preset, safe default)
+# Start the local LLM server in background (7B preset, safe default)
 python3.12 00_serve_model.py --preset 7b
 
-# Terminal 1 — or use the higher-quality 14B 4-bit model
+# Or use the higher-quality 14B 4-bit model
 python3.12 00_serve_model.py --preset 14b
 
-# Terminal 1 — or specify a custom model
+# Or specify a custom model
 python3.12 00_serve_model.py --model "meta-llama/Llama-3.1-8B-Instruct"
-```
 
-```bash
-# Terminal 2 — generate dataset using the local server
+# Watch the log for the readiness message (~1–3 minutes)
+tail -f vllm_server.log
+# Look for: "INFO:     Application startup complete."
+
+# Check server status
+python3.12 00_serve_model.py --status
+
+# Generate dataset once the server is ready
 python3.12 01_generate_dataset.py \
   --model "hosted_vllm/Qwen/Qwen2.5-7B-Instruct" \
   --url http://localhost:8000/v1 \
@@ -273,6 +283,9 @@ python3.12 01_generate_dataset.py \
   --output dataset.csv \
   --domain "Infrastructure" \
   --outline "OpenShift Virtualization Networking"
+
+# Stop the server when done (frees the GPU for training)
+python3.12 00_serve_model.py --stop
 ```
 
 > **Tip:** The `--model` value for `01_generate_dataset.py` must be prefixed
