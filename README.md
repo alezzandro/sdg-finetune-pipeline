@@ -339,11 +339,18 @@ requiring hand-crafted in-context learning examples.
 | `--keep-cot` | No | | Keep reasoning / chain-of-thought tags in output |
 | `--batch-size` | No | `25` | Chunks per batch; results are checkpointed after each batch |
 | `--resume` | No | | Resume from the last checkpoint instead of starting over |
+| `--background` | No | | Run in background with output logged to `generate_dataset.log` |
+| `--status` | No | | Show the status of a background generation process |
+| `--stop` | No | | Stop a running background generation process |
 
 > **Resilient processing:** With large documents the script processes chunks in
 > batches (default 25). After each batch, results are saved to a checkpoint
-> file. If the remote LLM connection drops mid-run, re-run the same command
-> with `--resume` to continue from the last completed batch.
+> file. If the LLM connection drops mid-run, re-run the same command with
+> `--resume` to continue from the last completed batch.
+>
+> **Background mode:** Add `--background` to run the generation in the
+> background. Monitor with `tail -f generate_dataset.log` or
+> `--status`, and stop with `--stop`.
 
 ## Step 2: Fine-Tune a Model
 

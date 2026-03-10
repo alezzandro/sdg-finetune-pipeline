@@ -1,13 +1,20 @@
 import os
+import sys
 import json
+import signal
 import hashlib
 import argparse
 import re
+import subprocess
+import time
 import pandas as pd
 from datasets import Dataset
 from sdg_hub import Flow, FlowRegistry
 
 os.environ['LITELLM_LOG'] = 'INFO'
+
+LOGFILE = "generate_dataset.log"
+PIDFILE = "generate_dataset.pid"
 
 REASONING_TAG_PATTERN = re.compile(
     r'<(think|reasoning|reflection)>.*?</\1>', flags=re.DOTALL
@@ -79,6 +86,64 @@ def chunk_text(text, max_chars=2500):
     return [c for c in chunks if c]
 
 
+def _read_pid():
+    """Read the PID from the pidfile, return None if missing or stale."""
+    if not os.path.exists(PIDFILE):
+        return None
+    with open(PIDFILE) as f:
+        try:
+            pid = int(f.read().strip())
+        except ValueError:
+            return None
+    try:
+        os.kill(pid, 0)
+        return pid
+    except OSError:
+        os.remove(PIDFILE)
+        return None
+
+
+def _stop_process():
+    """Stop a running background generation process."""
+    pid = _read_pid()
+    if pid is None:
+        print("No running generation process found.")
+        return
+    print(f"Stopping generation process (PID {pid})...")
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(15):
+        time.sleep(1)
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            break
+    else:
+        print("Process did not exit gracefully, sending SIGKILL...")
+        os.kill(pid, signal.SIGKILL)
+    if os.path.exists(PIDFILE):
+        os.remove(PIDFILE)
+    print("Generation process stopped.")
+
+
+def _show_status():
+    """Show the status of a background generation process."""
+    pid = _read_pid()
+    if pid is None:
+        print("No running generation process found.")
+        return
+    print(f"Generation process is running (PID {pid}).")
+    if os.path.exists(LOGFILE):
+        log_path = os.path.abspath(LOGFILE)
+        print(f"Log file: {log_path}")
+        with open(LOGFILE) as f:
+            lines = f.readlines()
+        checkpoints = [l for l in lines if "Checkpoint saved" in l or "Done —" in l]
+        if checkpoints:
+            print(f"Last progress: {checkpoints[-1].strip()}")
+        else:
+            print("Status: starting up...")
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Generate a synthetic QA dataset from a markdown document using SDG Hub."
@@ -112,7 +177,57 @@ def main():
                         help="Chunks per batch; results are checkpointed after each batch (default: 25)")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from the last checkpoint instead of starting over")
+    parser.add_argument("--background", action="store_true",
+                        help="Run in background with output logged to generate_dataset.log")
+    parser.add_argument("--status", action="store_true",
+                        help="Show the status of a background generation process")
+    parser.add_argument("--stop", action="store_true",
+                        help="Stop a running background generation process")
     args = parser.parse_args()
+
+    if args.status:
+        _show_status()
+        return
+
+    if args.stop:
+        _stop_process()
+        return
+
+    if args.background:
+        existing_pid = _read_pid()
+        if existing_pid is not None:
+            print(f"ERROR: Generation is already running (PID {existing_pid}).",
+                  file=sys.stderr)
+            print("Stop it first with: python3.12 01_generate_dataset.py --stop",
+                  file=sys.stderr)
+            sys.exit(1)
+
+        log_path = os.path.abspath(LOGFILE)
+        bg_args = [a for a in sys.argv if a != "--background"]
+        with open(LOGFILE, "w") as log_f:
+            proc = subprocess.Popen(
+                [sys.executable] + bg_args,
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        with open(PIDFILE, "w") as pf:
+            pf.write(str(proc.pid))
+
+        print(f"Generation started in background (PID {proc.pid}).")
+        print(f"\n{'='*60}")
+        print(f"  Log file: {log_path}")
+        print(f"")
+        print(f"  Monitor progress:")
+        print(f"    tail -f {LOGFILE}")
+        print(f"")
+        print(f"  Check status:")
+        print(f"    python3.12 01_generate_dataset.py --status")
+        print(f"")
+        print(f"  Stop the process:")
+        print(f"    python3.12 01_generate_dataset.py --stop")
+        print(f"{'='*60}")
+        return
 
     # --- 1. Load and chunk the source document ---
     with open(args.input, "r", encoding="utf-8") as f:
@@ -200,6 +315,7 @@ def main():
                   f"Re-run with --resume to continue. "
                   f"Tip: try a smaller --batch-size (current: {args.batch_size}) "
                   f"if failures are frequent.")
+            _cleanup_pidfile()
             return
 
         batch_df = result.to_pandas()
@@ -212,6 +328,20 @@ def main():
 
     # --- 6. Finalize ---
     _finalize(checkpoint_path, meta_path, args)
+    _cleanup_pidfile()
+
+
+def _cleanup_pidfile():
+    """Remove pidfile if it belongs to this process."""
+    if not os.path.exists(PIDFILE):
+        return
+    with open(PIDFILE) as f:
+        try:
+            pid = int(f.read().strip())
+        except ValueError:
+            return
+    if pid == os.getpid():
+        os.remove(PIDFILE)
 
 
 def _finalize(checkpoint_path, meta_path, args):
