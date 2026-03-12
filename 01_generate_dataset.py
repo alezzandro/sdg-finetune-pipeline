@@ -148,13 +148,13 @@ def main():
     parser = argparse.ArgumentParser(
         description="Generate a synthetic QA dataset from a markdown document using SDG Hub."
     )
-    parser.add_argument("--model", type=str, required=True,
+    parser.add_argument("--model", type=str,
                         help="LLM model identifier (e.g. openai/qwen3-14b)")
-    parser.add_argument("--url", type=str, required=True,
+    parser.add_argument("--url", type=str,
                         help="OpenAI-compatible API base URL")
-    parser.add_argument("--token", type=str, required=True,
+    parser.add_argument("--token", type=str,
                         help="API key / bearer token")
-    parser.add_argument("--input", type=str, required=True,
+    parser.add_argument("--input", type=str,
                         help="Path to the source markdown document")
     parser.add_argument("--output", type=str, default="dataset.csv",
                         help="Output CSV path (default: dataset.csv)")
@@ -228,6 +228,13 @@ def main():
         print(f"    python3.12 01_generate_dataset.py --stop")
         print(f"{'='*60}")
         return
+
+    # --- Validate required args for generation ---
+    missing = [n for n in ("model", "url", "token", "input")
+               if getattr(args, n) is None]
+    if missing:
+        parser.error(f"the following arguments are required: "
+                     f"{', '.join('--' + m for m in missing)}")
 
     # --- 1. Load and chunk the source document ---
     with open(args.input, "r", encoding="utf-8") as f:
