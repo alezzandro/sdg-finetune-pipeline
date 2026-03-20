@@ -1,0 +1,64 @@
+
+python3.12 00_serve_model.py --preset 14b
+
+
+python3.12 01_generate_dataset.py   --model "hosted_vllm/Qwen/Qwen2.5-14B-Instruct-AWQ"   --url http://localhost:8000/v1   --token dummy   --input corpus.md   --output dataset.csv   --domain "Infrastructure"   --outline "OpenShift Virtualization Networking"   --max-concurrency 4 --timeout 1800   --resume --background
+
+
+python3.12 00_serve_model.py --stop
+
+
+python3.12 02_train_model.py \
+  --dataset dataset.csv \
+  --model "ibm-granite/granite-3.3-2b-instruct" \
+  --output ./checkpoints \
+  --system-prompt "You are an expert in OpenShift Virtualization networking." \
+  --epochs 1 \
+  --learning-rate 5e-5 \
+  --max-seq-len 512 \
+  --micro-batch-size 4 \
+  --gradient-accumulation-steps 8 \
+  --background
+
+
+[root@3a5f173d3816 sdg-finetune-pipeline]# python3.12 03_test_model.py \
+  --checkpoint ./checkpoints \
+  --base-model "ibm-granite/granite-3.3-2b-instruct" \
+  --question "How do I configure a VM with a secondary network interface?" \
+  --system-prompt "You are an expert in OpenShift Virtualization networking."
+🦥 Unsloth: Will patch your computer to enable 2x faster free finetuning.
+🦥 Unsloth Zoo will now patch everything to make training faster!
+Reference model:  ibm-granite/granite-3.3-2b-instruct  (user-specified)
+Checkpoint:       ./checkpoints
+Question:         How do I configure a VM with a secondary network interface?
+
+Loading reference model...
+The `load_in_4bit` and `load_in_8bit` arguments are deprecated and will be removed in the future versions. Please, pass a `BitsAndBytesConfig` object in `quantization_config` argument instead.
+Loading checkpoint shards: 100%|████████████████████████████████████████████████████████████| 2/2 [00:02<00:00,  1.01s/it]
+The attention mask is not set and cannot be inferred from input because pad token is same as eos token. As a consequence, you may observe unexpected behavior. Please pass your input's `attention_mask` to obtain reliable results.
+Loading fine-tuned model...
+The `load_in_4bit` and `load_in_8bit` arguments are deprecated and will be removed in the future versions. Please, pass a `BitsAndBytesConfig` object in `quantization_config` argument instead.
+Loading checkpoint shards: 100%|████████████████████████████████████████████████████████████| 2/2 [00:01<00:00,  1.02it/s]
+
+========================================================================
+REFERENCE MODEL ANSWER  (ibm-granite/granite-3.3-2b-instruct)
+------------------------------------------------------------------------
+To add a secondary network interface to a virtual machine (VM) on OpenShift, you'll need to follow these steps:
+
+1. **Create or Identify the VM:** Firstly, ensure that your VM is created and running correctly within OpenShift. If it's already running, identify its name using `oc get vm <vm-name>`. 
+
+2. **Add Network Interface:** You can use the 'oc patch' command for this purpose. This command allows you to modify existing resources without deleting them. Here’s how you would add a new network interface:
+
+   ```
+   oc patch vm <vm-name> -p '{"spec":{"interfaces": [{"type": "InterfaceType", "macAddress": "<MAC_ADDRESS>", "dns": ["<DNS_1>", "<DNS_2>"], "ip": "<IP_ADDRESS>"}}}'
+   ```
+   
+   Replace `<VM_NAME>`, `<INTERFACE_TYPE>` (e.g., macvtap), `<MAC_ADDRESS>`, `<DNS_1>`, `<DNS_2>`, and `<IP_ADDRESS>` with appropriate values based on your requirements. 
+
+   For example, if you're adding a bridge interface (`macvtap`), MAC address should be unique within the LAN segment
+
+========================================================================
+FINE-TUNED MODEL ANSWER  (LoRA adapter)
+------------------------------------------------------------------------
+To configure a virtual machine (VM) to use a secondary network interface, you need to specify the name of that interface within the configuration file.
+========================================================================
