@@ -1,221 +1,187 @@
 # sdg-finetune-pipeline
 
-A three-step pipeline that converts technical documentation (AsciiDoc / PDF)
-to Markdown, generates a synthetic QA dataset from it using a large LLM
-(remote or locally served), then fine-tunes a smaller local model on that
-dataset with LoRA + SFT.
+A pipeline that converts technical documentation (AsciiDoc / PDF) to
+Markdown, generates a synthetic QA dataset using a locally served LLM,
+then fine-tunes a smaller model on that dataset with LoRA + SFT.
 
 | Step | Script | Tool | Purpose |
 |------|--------|------|---------|
 | 0 | `00_convert_docs.py` | [pypandoc](https://github.com/JessicaTegworthy/pypandoc) / [docling](https://github.com/DS4SD/docling) | Convert `.adoc` and `.pdf` files to Markdown |
-| — | `00_serve_model.py` | [vLLM](https://github.com/vllm-project/vllm) | (Optional) Serve a local LLM for dataset generation |
-| 1 | `01_generate_dataset.py` | [SDG Hub](https://github.com/instructlab/sdg) | Extract QA pairs from the Markdown corpus via an LLM |
+| — | `00_serve_model.py` | [vLLM](https://github.com/vllm-project/vllm) | Serve a local LLM for dataset generation |
+| 1 | `01_generate_dataset.py` | [SDG Hub](https://github.com/instructlab/sdg) | Extract QA pairs from the Markdown corpus via the local LLM |
 | 2 | `02_train_model.py` | [Training Hub](https://github.com/Red-Hat-AI-Innovation-Team/training_hub) | Fine-tune a small model on the generated dataset (LoRA + SFT) |
 | 3 | `03_test_model.py` | [PEFT](https://github.com/huggingface/peft) / [transformers](https://github.com/huggingface/transformers) | Compare base vs fine-tuned model answers |
 | 4 | `04_merge_model.py` | [PEFT](https://github.com/huggingface/peft) | Merge LoRA adapter into the base model for standalone deployment |
 
 ## Target Environment
 
-This pipeline is designed for **RHEL AI 1.5** on an **AWS g6.xlarge** instance
-(1 x NVIDIA L4 24 GB), though it works on any CUDA-capable machine.
+This pipeline is tested on **RHEL AI 1.5** running on an **AWS
+g6.xlarge** instance (1 x NVIDIA L4 24 GB). It should work on any RHEL
+or RHEL AI system with an NVIDIA GPU and `podman`.
 
 | Component | Requirement |
 |-----------|-------------|
-| OS | RHEL AI 1.5 (or any Linux with CUDA) |
-| GPU | NVIDIA L4 24 GB (or equivalent) |
-| Python | 3.12 |
-| System | `pandoc` auto-downloaded by the script if missing or too old |
-| LLM for step 1 | Any OpenAI-compatible endpoint — remote or local (see `00_serve_model.py`) |
+| OS | RHEL AI 1.5 / RHEL 9 |
+| GPU | NVIDIA L4 24 GB (tested) — any CUDA-capable GPU with 16+ GB VRAM |
+| Container runtime | `podman` (pre-installed on RHEL AI) |
+| NVIDIA GPU drivers | Pre-installed on RHEL AI |
+| `nvidia-container-toolkit` | Pre-installed on RHEL AI; provides CDI for GPU passthrough |
+
+> On non-RHEL-AI hosts, install the NVIDIA Container Toolkit following
+> the [official guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+
+## Host Setup
+
+RHEL AI ships with Python 3.9 on the host, which is too old for this
+pipeline. Everything runs inside a **UBI9** container with Python 3.12,
+using podman to pass through the NVIDIA GPU.
+
+### 1. Enable user lingering (required for remote sessions)
+
+When you SSH into the machine and later disconnect, systemd kills all
+processes belonging to your user — including podman containers. Enable
+**lingering** so containers survive SSH disconnects:
+
+```bash
+sudo loginctl enable-linger $(whoami)
+```
+
+This only needs to be done once. Without it, any running container will
+be stopped when you log out.
+
+> If podman shows errors like `"invalid internal status"` after a
+> disconnect, run `podman system migrate` to reset.
+
+### 2. Build the container image
+
+```bash
+git clone https://github.com/alezzandro/sdg-finetune-pipeline.git
+cd sdg-finetune-pipeline
+podman build -t sdg-finetune-pipeline .
+```
+
+The `Containerfile` installs Python 3.12, system libraries, and all pip
+dependencies except vLLM (which requires CUDA at install time and must
+be installed inside the running container).
+
+### 3. Create and start the container
+
+Create a persistent, detached container with GPU access and a named
+volume for the Hugging Face model cache:
+
+```bash
+podman run -d --name sdg-container \
+  --device nvidia.com/gpu=all \
+  --security-opt=label=disable \
+  -v hf-cache:/root/.cache/huggingface \
+  sdg-finetune-pipeline \
+  sleep infinity
+```
+
+The container runs `sleep infinity` as PID 1, so it stays alive even
+when you disconnect your exec session. The `hf-cache` volume persists
+downloaded model weights across container restarts.
+
+| Flag | Purpose |
+|------|---------|
+| `-d` | Run detached (in background) |
+| `--name sdg-container` | Name for easy reference |
+| `--device nvidia.com/gpu=all` | CDI GPU passthrough |
+| `--security-opt=label=disable` | Prevent SELinux from blocking GPU access |
+| `-v hf-cache:/root/.cache/huggingface` | Persist model downloads |
+
+### 4. Connect to the container
+
+```bash
+podman exec -it sdg-container /bin/bash
+```
+
+You can disconnect and reconnect at any time — the container and all
+background processes inside it keep running.
+
+### 5. First-time setup inside the container
+
+Install vLLM (requires GPU access, so it cannot be done at build time):
+
+```bash
+pip3.12 install vllm
+```
+
+Clone the repository:
+
+```bash
+cd /workspace
+git clone https://github.com/alezzandro/sdg-finetune-pipeline.git
+cd sdg-finetune-pipeline
+```
+
+Copy your source documentation (`.adoc` or `.pdf` files) into a `docs/`
+directory inside the workspace.
 
 ## Quick Start
 
+All commands below are run inside the container.
+
 ```bash
-# Create a virtual environment
-python3.12 -m venv venv && source venv/bin/activate
-pip install --upgrade pip
+# Step 0 — convert documentation to Markdown
+python3.12 00_convert_docs.py docs/ -o corpus.md
 
-# Install dependencies
-pip install sdg-hub
-pip install training-hub[lora]
-pip install pypandoc docling
-pip install vllm            # optional — only needed for local LLM serving
+# Start the local LLM server (runs in background)
+python3.12 00_serve_model.py --preset 14b
+tail -f vllm_server.log
+# Wait for: "INFO:     Application startup complete." (~2 minutes)
+# Press Ctrl+C to stop tailing (the server keeps running)
 
-# Step 0 — convert AsciiDoc docs to a single Markdown file
-# (pandoc is auto-downloaded on first run if missing or too old)
-python 00_convert_docs.py docs/ -o corpus.md
-
-# Step 1 — generate dataset
-# Option A: use a remote LLM endpoint
-python 01_generate_dataset.py \
-  --model "openai/qwen3-14b" \
-  --url "$LLM_ENDPOINT" \
-  --token "$API_KEY" \
+# Step 1 — generate synthetic QA dataset (runs in background)
+python3.12 01_generate_dataset.py \
+  --model "hosted_vllm/Qwen/Qwen2.5-14B-Instruct-AWQ" \
+  --url http://localhost:8000/v1 \
+  --token dummy \
   --input corpus.md \
   --output dataset.csv \
   --domain "Infrastructure" \
-  --outline "OpenShift Virtualization Networking"
+  --outline "OpenShift Virtualization Networking" \
+  --max-concurrency 4 --timeout 1800 \
+  --resume --background
 
-# Option B: serve a local LLM (starts in background, logs to vllm_server.log)
-#   python 00_serve_model.py --preset 7b
-#   tail -f vllm_server.log  # wait for "Application startup complete."
-# then generate using the local server:
-#   python 01_generate_dataset.py \
-#     --model "hosted_vllm/Qwen/Qwen2.5-7B-Instruct" \
-#     --url http://localhost:8000/v1 --token dummy \
-#     --input corpus.md --output dataset.csv \
-#     --domain "Infrastructure" --outline "OpenShift Virtualization Networking"
-# stop when done: python 00_serve_model.py --stop
+# Monitor progress
+tail -f generate_dataset.log
 
-# Step 2 — fine-tune a small model on the GPU
-python 02_train_model.py \
+# Stop the LLM server once dataset generation is done (frees GPU)
+python3.12 00_serve_model.py --stop
+
+# Step 2 — fine-tune a small model (runs in background)
+python3.12 02_train_model.py \
   --dataset dataset.csv \
   --model "ibm-granite/granite-3.3-2b-instruct" \
   --output ./checkpoints \
   --system-prompt "You are an expert in OpenShift Virtualization networking." \
   --epochs 1 \
   --learning-rate 5e-5 \
-  --max-seq-len 512
+  --background
+tail -f train_model.log
+
+# Step 3 — test the fine-tuned model
+python3.12 03_test_model.py \
+  --checkpoint ./checkpoints \
+  --base-model "ibm-granite/granite-3.3-2b-instruct" \
+  --question "How do I expose a VM with a Kubernetes service?" \
+  --system-prompt "You are an expert in OpenShift Virtualization networking."
+
+# Step 4 — merge LoRA adapter into a standalone model
+python3.12 04_merge_model.py --checkpoint ./checkpoints --output ./merged-model
 ```
-
-## Running in a Container (Podman + UBI9)
-
-RHEL AI ships with Python 3.9 on the host, which is too old for this pipeline.
-The recommended approach is to run everything inside a **UBI9 Python 3.12**
-container, using podman to pass through the NVIDIA GPU.
-
-### Host Prerequisites
-
-| Requirement | Notes |
-|-------------|-------|
-| `podman` | Pre-installed on RHEL AI |
-| NVIDIA GPU drivers | Pre-installed on RHEL AI |
-| `nvidia-container-toolkit` | Pre-installed on RHEL AI; provides CDI support for rootless GPU containers |
-
-> On non-RHEL-AI hosts, install the NVIDIA Container Toolkit following the
-> [official guide](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
-
-### Option A: Interactive Container
-
-Launch an interactive UBI9 container with GPU access and the project directory
-mounted as a volume:
-
-```bash
-podman run -it --rm \
-  --device nvidia.com/gpu=all \
-  --security-opt=label=disable \
-  -v ./:/workspace:Z \
-  -w /workspace \
-  registry.access.redhat.com/ubi9/ubi \
-  /bin/bash
-```
-
-Inside the container, install Python 3.12 and system dependencies, then create
-a virtual environment:
-
-```bash
-dnf install -y git gcc python3.12 python3.12-pip python3.12-devel libxcb mesa-libGL
-git clone https://github.com/alezzandro/sdg-finetune-pipeline.git && cd sdg-finetune-pipeline
-python3.12 -m venv venv && source venv/bin/activate
-pip3.12 install --upgrade pip
-pip3.12 install sdg-hub
-pip3.12 install training-hub[lora]
-pip3.12 install pypandoc docling
-pip3.12 install vllm            # optional — only needed for local LLM serving
-
-# Now run the pipeline steps as shown in Quick Start
-python3.12 00_convert_docs.py docs/ -o corpus.md
-# ...
-```
-
-### Option B: Build a Custom Image (Containerfile)
-
-A `Containerfile` is included in the repository with all pipeline
-dependencies pre-installed. **vLLM** is not included in the image
-because it requires CUDA at install time (CDI device passthrough is not
-available during `podman build`). Install it once after launching the
-container with GPU access.
-
-```bash
-podman build -t sdg-finetune-pipeline .
-
-# Steps 0–1 (no GPU needed)
-podman run --rm \
-  -v ./docs:/workspace/docs:Z \
-  -v ./output:/workspace/output:Z \
-  sdg-finetune-pipeline \
-  python3.12 00_convert_docs.py docs/ -o output/corpus.md
-
-# Step 2 (GPU required)
-podman run --rm \
-  --device nvidia.com/gpu=all \
-  --security-opt=label=disable \
-  -v ./output:/workspace/output:Z \
-  sdg-finetune-pipeline \
-  python3.12 02_train_model.py \
-    --dataset output/dataset.csv \
-    --model ibm-granite/granite-3.3-2b-instruct \
-    --output output/checkpoints
-```
-
-To use the local LLM server, launch an interactive container and install
-vLLM first:
-
-```bash
-podman run -it --rm \
-  --device nvidia.com/gpu=all \
-  --security-opt=label=disable \
-  -v ./:/workspace:Z \
-  -v hf-cache:/root/.cache/huggingface \
-  -w /workspace \
-  sdg-finetune-pipeline /bin/bash
-
-# Inside the container (one-time install):
-pip3.12 install vllm
-python3.12 00_serve_model.py --preset 14b
-# ... wait for readiness, then run 01_generate_dataset.py
-```
-
-### GPU Passthrough Reference
-
-| Method | Flag | When to Use |
-|--------|------|-------------|
-| **CDI** (recommended) | `--device nvidia.com/gpu=all` | RHEL AI / systems with `nvidia-container-toolkit` and CDI configured |
-| **CDI (specific GPU)** | `--device nvidia.com/gpu=0` | Multi-GPU hosts when you want to target a single GPU |
-| **OCI hooks** (legacy) | `--hooks-dir=/usr/share/containers/oci/hooks.d/` | Older `nvidia-container-toolkit` versions without CDI |
-| **Direct devices** | `--device /dev/nvidia0 --device /dev/nvidiactl --device /dev/nvidia-uvm --device /dev/nvidia-uvm-tools` | Fallback when no container toolkit is installed (limited CUDA support) |
-
-> **Tip:** On RHEL AI, `--security-opt=label=disable` prevents SELinux from
-> blocking access to the GPU device nodes. It can be omitted if you configure
-> an appropriate SELinux policy instead.
-
-### Persisting Hugging Face Cache
-
-Step 2 downloads model weights from Hugging Face. To avoid re-downloading on
-every container run, mount a cache directory:
-
-```bash
-podman run -it --rm \
-  --device nvidia.com/gpu=all \
-  --security-opt=label=disable \
-  -v ./:/workspace:Z \
-  -v hf-cache:/root/.cache/huggingface \
-  -w /workspace \
-  registry.access.redhat.com/ubi9/ubi \
-  /bin/bash
-```
-
-This creates a named podman volume (`hf-cache`) that persists across
-container restarts.
 
 ## Step 0: Convert Documentation to Markdown
 
-`00_convert_docs.py` converts `.adoc` (AsciiDoc) and `.pdf` files to Markdown.
-AsciiDoc files are converted using **pypandoc** and PDF files are converted
-using **docling**. A compatible version of `pandoc` (>= 2.15) is automatically
-downloaded on first run if the system version is missing or too old.
+`00_convert_docs.py` converts `.adoc` (AsciiDoc) and `.pdf` files to
+Markdown. AsciiDoc files are converted using **pypandoc** and PDF files
+using **docling**. A compatible version of `pandoc` (>= 2.15) is
+automatically downloaded on first run if the system version is missing
+or too old.
 
-By default all input files are merged into a single Markdown file, which is
-what step 1 expects.
+By default all input files are merged into a single Markdown file,
+which is what step 1 expects.
 
 ### Arguments
 
@@ -229,29 +195,21 @@ what step 1 expects.
 ### Examples
 
 ```bash
-# Convert a directory of .adoc files into a single corpus
-python 00_convert_docs.py /path/to/openshift-docs/networking/ -o corpus.md
+python3.12 00_convert_docs.py docs/ -o corpus.md
 
-# Convert specific files
-python 00_convert_docs.py guide.adoc appendix.pdf -o corpus.md
+python3.12 00_convert_docs.py guide.adoc appendix.pdf -o corpus.md
 
-# Keep individual .md files
-python 00_convert_docs.py docs/ --no-merge -o converted/
-
-# Mix files and directories
-python 00_convert_docs.py overview.adoc modules/ architecture.pdf -o corpus.md
+python3.12 00_convert_docs.py docs/ --no-merge -o converted/
 ```
 
-## Serving a Local LLM (Optional)
+## Serving a Local LLM
 
-If you don't have a reliable remote LLM endpoint, you can serve a model
-locally on the GPU using `00_serve_model.py` (a thin wrapper around
-[vLLM](https://github.com/vllm-project/vllm)).  The server starts in the
-**background**, writes logs to `vllm_server.log`, and exposes an
-OpenAI-compatible API that `01_generate_dataset.py` can use directly.
+`00_serve_model.py` starts a [vLLM](https://github.com/vllm-project/vllm)
+server in the **background** that exposes an OpenAI-compatible API.
+The server writes logs to `vllm_server.log`.
 
-> **Note:** The local LLM and fine-tuning (step 2) both need the GPU.
-> Stop the vLLM server with `--stop` before running step 2.
+> **Important:** The local LLM and fine-tuning (step 2) both need the
+> GPU. Stop the vLLM server with `--stop` before running step 2.
 
 ### Recommended Models for the L4 24 GB
 
@@ -277,65 +235,49 @@ OpenAI-compatible API that `01_generate_dataset.py` can use directly.
 ### Examples
 
 ```bash
-# Start the local LLM server in background (7B preset, safe default)
-python3.12 00_serve_model.py --preset 7b
-
-# Or use the higher-quality 14B 4-bit model
+# Start with the 14B preset (recommended for quality)
 python3.12 00_serve_model.py --preset 14b
 
-# Or specify a custom model
-python3.12 00_serve_model.py --model "meta-llama/Llama-3.1-8B-Instruct"
-
-# Watch the log for the readiness message (~1–3 minutes)
+# Watch the log until ready (~2 minutes)
 tail -f vllm_server.log
-# Look for: "INFO:     Application startup complete."
 
 # Check server status
 python3.12 00_serve_model.py --status
 
-# Generate dataset once the server is ready
-python3.12 01_generate_dataset.py \
-  --model "hosted_vllm/Qwen/Qwen2.5-7B-Instruct" \
-  --url http://localhost:8000/v1 \
-  --token dummy \
-  --input corpus.md \
-  --output dataset.csv \
-  --domain "Infrastructure" \
-  --outline "OpenShift Virtualization Networking"
-
-# Stop the server when done (frees the GPU for training)
+# Stop the server (frees GPU for training)
 python3.12 00_serve_model.py --stop
 ```
 
-> **Tip:** The `--model` value for `01_generate_dataset.py` must be prefixed
-> with `hosted_vllm/` followed by the exact model name served by vLLM.
-> The `--token` can be any non-empty string (vLLM doesn't authenticate by default).
+> **Tip:** The `--model` value for `01_generate_dataset.py` must be
+> prefixed with `hosted_vllm/` followed by the exact model name served
+> by vLLM. The `--token` can be any non-empty string (vLLM doesn't
+> authenticate by default).
 
 ## Step 1: Generate a Synthetic Dataset
 
-`01_generate_dataset.py` reads a Markdown document, chunks it, and sends each
-chunk to an LLM (remote or locally served) through an SDG Hub flow to produce
+`01_generate_dataset.py` reads a Markdown document, chunks it, and
+sends each chunk to the local LLM through an SDG Hub flow to produce
 question-answer pairs.
 
-The default **Key Facts** flow decomposes each chunk into atomic facts and
-generates multiple QA pairs per fact, producing a rich training dataset without
-requiring hand-crafted in-context learning examples.
+The default **Key Facts** flow decomposes each chunk into atomic facts
+and generates multiple QA pairs per fact, producing a rich training
+dataset without requiring hand-crafted in-context learning examples.
 
 ### Arguments
 
 | Argument | Required | Default | Description |
 |----------|----------|---------|-------------|
-| `--model` | Yes | | LLM identifier (e.g. `openai/qwen3-14b`) |
+| `--model` | Yes | | LLM identifier (e.g. `hosted_vllm/Qwen/Qwen2.5-14B-Instruct-AWQ`) |
 | `--url` | Yes | | OpenAI-compatible API base URL |
-| `--token` | Yes | | API key / bearer token |
+| `--token` | Yes | | API key / bearer token (use `dummy` for local vLLM) |
 | `--input` | Yes | | Path to the source Markdown document |
 | `--output` | No | `dataset.csv` | Output CSV path |
 | `--domain` | No | `General` | Knowledge domain label |
 | `--outline` | No | | Short topic description |
 | `--flow` | No | `Key Facts Knowledge Tuning Dataset Generation Flow` | SDG Hub flow name |
 | `--max-chunk-chars` | No | `2500` | Max characters per document chunk |
-| `--max-concurrency` | No | `10` | Max concurrent LLM requests |
-| `--timeout` | No | `600` | Per-request timeout in seconds |
+| `--max-concurrency` | No | `10` | Max concurrent LLM requests (use `2`–`4` for local GPU) |
+| `--timeout` | No | `600` | Per-request timeout in seconds (use `1800` for local GPU) |
 | `--keep-cot` | No | | Keep reasoning / chain-of-thought tags in output |
 | `--batch-size` | No | `25` | Chunks per batch; results are checkpointed after each batch |
 | `--resume` | No | | Resume from the last checkpoint instead of starting over |
@@ -343,29 +285,55 @@ requiring hand-crafted in-context learning examples.
 | `--status` | No | | Show the status of a background generation process |
 | `--stop` | No | | Stop a running background generation process |
 
-> **Resilient processing:** With large documents the script processes chunks in
-> batches (default 25). After each batch, results are saved to a checkpoint
-> file. If the LLM connection drops mid-run, re-run the same command with
-> `--resume` to continue from the last completed batch.
+### Examples
+
+```bash
+# Run dataset generation in background with resume support
+python3.12 01_generate_dataset.py \
+  --model "hosted_vllm/Qwen/Qwen2.5-14B-Instruct-AWQ" \
+  --url http://localhost:8000/v1 \
+  --token dummy \
+  --input corpus.md \
+  --output dataset.csv \
+  --domain "Infrastructure" \
+  --outline "OpenShift Virtualization Networking" \
+  --max-concurrency 4 --timeout 1800 \
+  --resume --background
+
+# Monitor progress
+tail -f generate_dataset.log
+
+# Check status
+python3.12 01_generate_dataset.py --status
+
+# Stop if needed
+python3.12 01_generate_dataset.py --stop
+```
+
+> **Resilient processing:** The script processes chunks in batches
+> (default 25). After each batch, results are saved to a checkpoint
+> file. If the process fails or is stopped, re-run the same command
+> with `--resume` to continue from the last completed batch.
 >
-> **Background mode:** Add `--background` to run the generation in the
-> background. Monitor with `tail -f generate_dataset.log` or
-> `--status`, and stop with `--stop`.
+> **Local GPU tuning:** When using the local vLLM server on a single
+> GPU, set `--max-concurrency 2`–`4` to avoid GPU contention and
+> `--timeout 1800` to allow for slower local inference.
 
 ## Step 2: Fine-Tune a Model
 
-`02_train_model.py` converts the CSV from step 1 to JSONL messages format and
-fine-tunes a small model using Training Hub's LoRA + SFT algorithm (backed by
-Unsloth for speed).
+`02_train_model.py` converts the CSV from step 1 to JSONL messages
+format and fine-tunes a small model using Training Hub's LoRA + SFT
+algorithm (backed by Unsloth for speed).
 
-On the L4 (24 GB), QLoRA 4-bit quantization is enabled by default, which lets
-you fine-tune models up to ~7 B parameters comfortably.
+On the L4 (24 GB), QLoRA 4-bit quantization is enabled by default,
+which lets you fine-tune models up to ~7 B parameters comfortably.
 
-> **Avoiding catastrophic forgetting:** When fine-tuning instruct models, use
-> a low learning rate (`5e-5`) and fewer epochs (`1`–`2`). Aggressive settings
-> (e.g. `2e-4` / `3` epochs on small datasets) can cause the model to overfit
-> and lose its general instruction-following ability, producing shorter and
-> less coherent answers than the original model.
+> **Avoiding catastrophic forgetting:** When fine-tuning instruct
+> models, use a low learning rate (`5e-5`) and fewer epochs (`1`–`2`).
+> Aggressive settings (e.g. `2e-4` / `3` epochs on small datasets) can
+> cause the model to overfit and lose its general instruction-following
+> ability, producing shorter and less coherent answers than the original
+> model.
 
 ### Arguments
 
@@ -383,12 +351,15 @@ you fine-tune models up to ~7 B parameters comfortably.
 | `--micro-batch-size` | No | `2` | Batch size per device |
 | `--gradient-accumulation-steps` | No | `4` | Gradient accumulation steps |
 | `--no-quantize` | No | | Disable QLoRA 4-bit quantization |
+| `--background` | No | | Run in background with output logged to `train_model.log` |
+| `--status` | No | | Show the status of a background training process |
+| `--stop` | No | | Stop a running background training process |
 
 ### Recommended Models for the L4 24 GB
 
-> **Tip:** Always prefer an **instruct** model over a base model. Instruct
-> models already know how to follow instructions, so fine-tuning only needs
-> to add domain knowledge — producing much better answers.
+> **Tip:** Always prefer an **instruct** model over a base model.
+> Instruct models already know how to follow instructions, so
+> fine-tuning only needs to add domain knowledge.
 
 | Model | Params | Notes |
 |-------|--------|-------|
@@ -399,15 +370,38 @@ you fine-tune models up to ~7 B parameters comfortably.
 
 With QLoRA 4-bit, larger models (7 B+) also fit in 24 GB.
 
+### Examples
+
+```bash
+# Run training in background
+python3.12 02_train_model.py \
+  --dataset dataset.csv \
+  --model "ibm-granite/granite-3.3-2b-instruct" \
+  --output ./checkpoints \
+  --system-prompt "You are an expert in OpenShift Virtualization networking." \
+  --epochs 1 \
+  --learning-rate 5e-5 \
+  --background
+
+# Monitor progress
+tail -f train_model.log
+
+# Check status
+python3.12 02_train_model.py --status
+
+# Stop if needed
+python3.12 02_train_model.py --stop
+```
+
 ## Step 3: Test the Fine-Tuned Model
 
-`03_test_model.py` loads a reference model and the LoRA-adapted model, sends
-the same question to each, and prints the answers side by side so you can see
-the effect of fine-tuning.
+`03_test_model.py` loads a reference model and the LoRA-adapted model,
+sends the same question to each, and prints the answers side by side so
+you can see the effect of fine-tuning.
 
 By default the reference model is auto-detected from the checkpoint's
-`adapter_config.json`. Use `--base-model` to override it — for example, to
-compare against the original instruct model before fine-tuning.
+`adapter_config.json`. Use `--base-model` to override it — for example,
+to compare against the original instruct model before fine-tuning.
 
 ### Arguments
 
@@ -423,22 +417,19 @@ compare against the original instruct model before fine-tuning.
 ### Examples
 
 ```bash
-# Compare the instruct model (before) vs fine-tuned model (after)
-python 03_test_model.py \
+python3.12 03_test_model.py \
   --checkpoint ./checkpoints \
   --base-model "ibm-granite/granite-3.3-2b-instruct" \
   --question "How do I expose a VM with a Kubernetes service?" \
   --system-prompt "You are an expert in OpenShift Virtualization networking."
 
-# With a different question
-python 03_test_model.py \
+python3.12 03_test_model.py \
   --checkpoint ./checkpoints \
   --base-model "ibm-granite/granite-3.3-2b-instruct" \
   --question "What is the difference between masquerade and bridge networking?" \
   --system-prompt "You are an expert in OpenShift Virtualization networking."
 
-# Longer answers, auto-detect base model
-python 03_test_model.py \
+python3.12 03_test_model.py \
   --checkpoint ./checkpoints \
   --question "Explain how to configure SR-IOV for a virtual machine." \
   --max-new-tokens 512
@@ -446,10 +437,10 @@ python 03_test_model.py \
 
 ## Step 4: Merge and Export the Model
 
-`04_merge_model.py` merges the LoRA adapter into the base model weights and
-saves a standalone model directory. The merged model can be loaded directly
-with `transformers` or served via an inference engine like vLLM without
-requiring PEFT at inference time.
+`04_merge_model.py` merges the LoRA adapter into the base model weights
+and saves a standalone model directory. The merged model can be loaded
+directly with `transformers` or served via an inference engine like
+vLLM without requiring PEFT at inference time.
 
 ### Arguments
 
@@ -462,25 +453,74 @@ requiring PEFT at inference time.
 ### Examples
 
 ```bash
-# Merge with default paths
-python 04_merge_model.py
+python3.12 04_merge_model.py
 
-# Custom checkpoint and output
-python 04_merge_model.py \
+python3.12 04_merge_model.py \
   --checkpoint ./checkpoints \
   --output ./my-merged-model
+```
+
+## Managing the Container
+
+### Reconnecting after SSH disconnect
+
+The container keeps running after you disconnect (thanks to `loginctl
+enable-linger` and the `sleep infinity` entrypoint). To reconnect:
+
+```bash
+ssh cloud-user@<your-host>
+podman exec -it sdg-container /bin/bash
+cd /workspace/sdg-finetune-pipeline
+```
+
+Your background processes (vLLM server, dataset generation) continue
+running inside the container between sessions.
+
+### Useful commands
+
+```bash
+# Check container status
+podman ps
+
+# Check vLLM server status
+python3.12 00_serve_model.py --status
+
+# Check dataset generation status
+python3.12 01_generate_dataset.py --status
+
+# Check training status
+python3.12 02_train_model.py --status
+
+# Stop everything and remove the container
+python3.12 02_train_model.py --stop
+python3.12 01_generate_dataset.py --stop
+python3.12 00_serve_model.py --stop
+exit
+podman stop sdg-container
+podman rm sdg-container
+```
+
+### Recovering from podman errors
+
+If podman shows `"invalid internal status"` after a session disconnect
+(usually means lingering was not enabled):
+
+```bash
+podman system migrate
+podman start sdg-container
+podman exec -it sdg-container /bin/bash
 ```
 
 ## Project Structure
 
 ```
 00_convert_docs.py      # Step 0 — document conversion (.adoc / .pdf -> .md)
-00_serve_model.py       # Optional — serve a local LLM with vLLM
+00_serve_model.py       # Serve a local LLM with vLLM
 01_generate_dataset.py  # Step 1 — synthetic data generation
 02_train_model.py       # Step 2 — LoRA + SFT fine-tuning
 03_test_model.py        # Step 3 — compare base vs fine-tuned model answers
 04_merge_model.py       # Step 4 — merge LoRA adapter and export standalone model
-Containerfile           # UBI9 container image with all dependencies
+Containerfile           # UBI9 container image with pipeline dependencies
 README.md
 ```
 
